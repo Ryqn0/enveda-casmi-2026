@@ -31,22 +31,20 @@ SOURCE = ROOT / "kaggle" / "submit_notebook.py"
 
 
 def build_dataset() -> None:
-    """Stage wheels + the casmi package into one attachable dataset."""
+    """Stage the offline wheels into an attachable dataset.
+
+    Only wheels: the library code is embedded directly into the notebook, so
+    there is no package to ship and nothing that can drift out of step with it.
+    """
     if STAGE.exists():
         shutil.rmtree(STAGE)
     (STAGE / "wheels").mkdir(parents=True)
 
     wheels = sorted((ROOT / "data" / "wheels").glob("*.whl"))
     if not wheels:
-        raise SystemExit("no wheels in data/wheels — see scripts/fetch_wheels")
+        raise SystemExit("no wheels in data/wheels — re-download them first")
     for w in wheels:
         shutil.copy2(w, STAGE / "wheels" / w.name)
-
-    # Only the runtime modules. official_metric is scoring-side, not needed here.
-    pkg = STAGE / "casmi"
-    pkg.mkdir()
-    for name in ("__init__.py", "library.py"):
-        shutil.copy2(ROOT / "src" / "casmi" / name, pkg / name)
 
     (STAGE / "dataset-metadata.json").write_text(
         json.dumps(
@@ -54,7 +52,7 @@ def build_dataset() -> None:
             indent=2,
         )
     )
-    print(f"staged {len(wheels)} wheels + casmi package -> {STAGE.relative_to(ROOT)}")
+    print(f"staged {len(wheels)} wheels -> {STAGE.relative_to(ROOT)}")
 
 
 def to_notebook() -> None:
@@ -66,8 +64,20 @@ def to_notebook() -> None:
     cells = []
     for chunk in body.split("\n# %%"):
         chunk = chunk.lstrip()
+
+        # The very first cell is not preceded by a newline, so split() left its
+        # "# %%" marker attached. Strip it the same way split removed the others.
         if chunk.startswith("# %%"):
             chunk = chunk[4:].lstrip()
+
+        # `# %%EMBED <path>` becomes a code cell holding that file verbatim, so
+        # the notebook carries the real implementation instead of importing a
+        # second copy that could fall out of step with the repo.
+        if chunk.startswith("EMBED "):
+            target = ROOT / chunk.split(maxsplit=1)[1].strip().splitlines()[0]
+            chunk = target.read_text().strip("\n")
+            print(f"embedded {target.relative_to(ROOT)} ({len(chunk.splitlines())} lines)")
+
         is_md = chunk.startswith("[markdown]")
         if is_md:
             chunk = chunk[len("[markdown]") :].lstrip("\n")
