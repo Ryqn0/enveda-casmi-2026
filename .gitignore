@@ -30,3 +30,7 @@ submissions/
 # staged kaggle dataset + downloaded wheels (regenerate with scripts/package_kaggle.py)
 data/kaggle_deps/
 data/wheels/
+
+# COCONUT dump (re-download with the URL in docs/04-phase2-plan.md)
+data/coconut/
+data/pool.parquet
