@@ -76,7 +76,7 @@ subprocess.run(
         # --find-links: look for packages in this local folder instead. It holds
         # wheels for Python 3.10-3.13, so this survives Kaggle upgrading its
         # base image.
-        "--find-links=/kaggle/input/casmi26-deps/wheels",
+        "--find-links=/kaggle/input/casmi26-deps",
         "ms_entropy",        # the package we want
     ],
     check=True,  # raise immediately if pip fails, rather than failing later

@@ -1,16 +1,17 @@
 """Package everything Kaggle needs: a deps dataset and the submission notebook.
 
-This is a Notebooks-only competition with internet disabled, so every
-dependency must arrive as an attached dataset. Rather than pasting the library
-code into the notebook (where it would drift from the repo), we ship the
-`casmi` package itself alongside the wheels and import it.
+This is a Notebooks-only competition with internet disabled, so third-party
+packages must arrive as an attached dataset — hence the wheels. The library code
+does NOT ship that way: a `# %%EMBED <path>` marker expands into the notebook, so
+the notebook is self-contained and readable while `src/casmi/library.py` remains
+the single source of truth.
 
     uv run python scripts/package_kaggle.py
 
 Then push, in order (the notebook depends on the dataset existing):
 
-    kaggle datasets create -p data/kaggle_deps --dir-mode zip   # first time
-    kaggle datasets version -p data/kaggle_deps -m "..."        # updates
+    kaggle datasets create -p data/kaggle_deps        # first time
+    kaggle datasets version -p data/kaggle_deps -m "..."   # updates
     kaggle kernels push -p kaggle
 """
 
@@ -38,13 +39,15 @@ def build_dataset() -> None:
     """
     if STAGE.exists():
         shutil.rmtree(STAGE)
-    (STAGE / "wheels").mkdir(parents=True)
+    STAGE.mkdir(parents=True)
 
     wheels = sorted((ROOT / "data" / "wheels").glob("*.whl"))
     if not wheels:
         raise SystemExit("no wheels in data/wheels — re-download them first")
+    # Flat, at the dataset root. A subdirectory would need `--dir-mode zip` on
+    # upload, which turns it into wheels.zip on Kaggle and breaks --find-links.
     for w in wheels:
-        shutil.copy2(w, STAGE / "wheels" / w.name)
+        shutil.copy2(w, STAGE / w.name)
 
     (STAGE / "dataset-metadata.json").write_text(
         json.dumps(
@@ -149,5 +152,5 @@ if __name__ == "__main__":
     build_dataset()
     to_notebook()
     print("\nnext:")
-    print(f"  kaggle datasets create -p {STAGE.relative_to(ROOT)} --dir-mode zip")
+    print(f"  kaggle datasets create -p {STAGE.relative_to(ROOT)}")
     print("  kaggle kernels push -p kaggle")
