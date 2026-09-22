@@ -18,6 +18,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["ipykernel", "jupyter", "ruff", "pytest"]
+app = [
+    "gradio>=6.28.0",
+]
 
 [tool.uv]
 package = true
