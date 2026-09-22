@@ -23,3 +23,6 @@ kaggle.json
 
 # os
 .DS_Store
+
+# generated submissions (scores are logged in docs/ instead)
+submissions/

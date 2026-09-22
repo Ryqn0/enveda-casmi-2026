@@ -7,11 +7,12 @@ dependencies = [
     "numpy",
     "pandas",
     "pyarrow",
-    "rdkit",
+    "rdkit==2026.3.3",
     "tqdm",
     "matplotlib",
     "kagglehub",
     "kaggle",
+    "ms-entropy>=1.5.2",
 ]
 
 [project.optional-dependencies]

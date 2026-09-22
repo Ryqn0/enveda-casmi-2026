@@ -153,6 +153,7 @@ dependencies = [
     { name = "kaggle" },
     { name = "kagglehub" },
     { name = "matplotlib" },
+    { name = "ms-entropy" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "pyarrow" },
@@ -175,11 +176,12 @@ requires-dist = [
     { name = "kaggle" },
     { name = "kagglehub" },
     { name = "matplotlib" },
+    { name = "ms-entropy", specifier = ">=1.5.2" },
     { name = "numpy" },
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "pytest", marker = "extra == 'dev'" },
-    { name = "rdkit" },
+    { name = "rdkit", specifier = "==2026.3.3" },
     { name = "ruff", marker = "extra == 'dev'" },
     { name = "tqdm" },
 ]
@@ -1023,6 +1025,25 @@ wheels = [
 ]
 
 [[package]]
+name = "ms-entropy"
+version = "1.5.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/33/ab/734b3183b2c845e1707fd4eaee05ce7836a8e505eba3339200fadb048fde/ms_entropy-1.5.2.tar.gz", hash = "sha256:490ef92af254766ec22a995c324a377c4a651c11ed7dbe958a8fda50c00584c1", size = 349372, upload-time = "2026-07-07T08:50:20.505Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8f/b0/8e7c0299a379e77584ceb3fcdb764924967f48516a10cc964e36fa16085e/ms_entropy-1.5.2-cp311-cp311-macosx_10_9_universal2.whl", hash = "sha256:5add411f7474a0ba0d9a508a3ba9461e16f0263323a6c9c40d236f5661ccfc0f", size = 350261, upload-time = "2026-07-07T08:48:56.486Z" },
+    { url = "https://files.pythonhosted.org/packages/7d/c7/95f0c2e8904253a642d0ce3d6e9e231f3567d6b8fcc0e205ae75f064c8ab/ms_entropy-1.5.2-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:09f253734b648226d2adfac4ee43af5ffe015ab7fad77bb6526e8bd6d837d8f1", size = 238642, upload-time = "2026-07-07T08:48:58.057Z" },
+    { url = "https://files.pythonhosted.org/packages/55/59/71d85574a8b58f2dc79b768113a57f5102dd672e402b73e177b060fd8994/ms_entropy-1.5.2-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:46680e1bf630c5c09843605c0ed0dc9b5863d36dea10208d4bb8cd153f3b52da", size = 234873, upload-time = "2026-07-07T08:48:59.404Z" },
+    { url = "https://files.pythonhosted.org/packages/02/8c/4fbe1c243f3f1d035e5be11e7812fc8ee3044765b2c25eeec1b892086f15/ms_entropy-1.5.2-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f0a9a83359118f0fdb3260e1a6ba891ba51f76523bbfa0310e065c9ee5b9e7a7", size = 271003, upload-time = "2026-07-07T08:49:00.965Z" },
+    { url = "https://files.pythonhosted.org/packages/75/5a/e388b6ad9cc456850e4d7f186f70ef01c5e809cb919b19ed40971968a44c/ms_entropy-1.5.2-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:b24380703faa6adbf3cc1fa6bdd479b8808e66bf3a77624a0f524ca0c5a6f7e4", size = 272650, upload-time = "2026-07-07T08:49:02.542Z" },
+    { url = "https://files.pythonhosted.org/packages/b2/0c/5e61c5ca74f52291249e18862e69898d6fdc8bf8219203496fbb7d8f20ad/ms_entropy-1.5.2-cp311-cp311-win32.whl", hash = "sha256:a1694fb5204553609a08e2655c08582238534425dfe58b1f1ab0e4500a2b0104", size = 210471, upload-time = "2026-07-07T08:49:03.905Z" },
+    { url = "https://files.pythonhosted.org/packages/ec/20/28ab3e1be99c942d717b0d9d6acd5558df6b1440522bcfe91304121e8a6a/ms_entropy-1.5.2-cp311-cp311-win_amd64.whl", hash = "sha256:209adc28b7093b5d7efd62e2849612ce197315ef28caeb3d6da92ff6515bf8fa", size = 224521, upload-time = "2026-07-07T08:49:05.375Z" },
+    { url = "https://files.pythonhosted.org/packages/80/e0/61c12c7fed6801500891443ce13a8af0876a8d85c67f631ee98bb3111116/ms_entropy-1.5.2-cp311-cp311-win_arm64.whl", hash = "sha256:365de3c05b5cde68cce4379d0675a6247484057814fa0228fce5fabe806a63df", size = 212780, upload-time = "2026-07-07T08:49:07.048Z" },
+]
+
+[[package]]
 name = "nbclient"
 version = "0.11.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1487,17 +1508,17 @@ wheels = [
 
 [[package]]
 name = "rdkit"
-version = "2026.3.6"
+version = "2026.3.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
     { name = "pillow" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6c/55/ee0a6a65a8d2c0fd4c272dcc5e6531b4c9779026b6557802b7d59bfb7e87/rdkit-2026.3.6-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:3c5395ccf20eb4301195086b15b3628c3cba770994dfbca7e0ca0992fe0e5e1c", size = 30239348, upload-time = "2026-09-03T20:09:22.583Z" },
-    { url = "https://files.pythonhosted.org/packages/a8/6a/50fa8d28086910bbc78ba733526866b896194880d72b23ca72398765cb51/rdkit-2026.3.6-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:d8b92c14c99bf025772582c7f29b7619dd8c63c745a7b90f720b02640c15a5a1", size = 36688087, upload-time = "2026-09-03T20:09:26.428Z" },
-    { url = "https://files.pythonhosted.org/packages/4d/1f/548b0810bd504b93b4cfa00e35328b1905232eaff023db46575bd9e3433d/rdkit-2026.3.6-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:dcf09347e1a0dc1d7e5fcc34f5da79d1f4bb0e04ecadee669449b82ae2492799", size = 38182808, upload-time = "2026-09-03T20:09:30.128Z" },
-    { url = "https://files.pythonhosted.org/packages/c5/40/43c3c31edec848e42956fb302b00815000d96001c7cd359d6f170c66b9c5/rdkit-2026.3.6-cp311-cp311-win_amd64.whl", hash = "sha256:b7a810148bbf917bb48ccec4e885b09c036fa68f28d3fd7fac6ddf96aac633d6", size = 24939884, upload-time = "2026-09-03T20:09:33.442Z" },
+    { url = "https://files.pythonhosted.org/packages/50/88/b7ca9475d0da762448c04fa858ec753c1da9753af35559bb380e655960a7/rdkit-2026.3.3-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:5c9c5a9941d2fc4ea407db841768ffba67ac078952d373e73389ee249ecb2c62", size = 29935627, upload-time = "2026-06-05T18:42:24.995Z" },
+    { url = "https://files.pythonhosted.org/packages/25/02/c7ca96f0f728d175355a2153dedf3dfa9adf62d05ea2e6f01d834b12023f/rdkit-2026.3.3-cp311-cp311-manylinux_2_28_aarch64.whl", hash = "sha256:afa84eda0c1703f7187e1386f56c91931b39772712c235abbd7d53ad0071d06b", size = 35774271, upload-time = "2026-06-05T18:42:28.528Z" },
+    { url = "https://files.pythonhosted.org/packages/5e/f9/61fc2cc89472bffc0bb30e616d2dc6ca8eb5a35aa50319ab1f62c35a3e1b/rdkit-2026.3.3-cp311-cp311-manylinux_2_28_x86_64.whl", hash = "sha256:49daed64f54ca589590cf63c5ec4c43afb94301cdf4ca85fec270fcd675e2c4d", size = 37257559, upload-time = "2026-06-05T18:42:32.566Z" },
+    { url = "https://files.pythonhosted.org/packages/c3/1d/b04460859c12e1a8eac261c63ea39e958d2cfa84cc06cc8a295dde7150f5/rdkit-2026.3.3-cp311-cp311-win_amd64.whl", hash = "sha256:41ac83ad336b8aaf47b5bf5f2c36796b45957e97acecc1f9d5dcbc8235c6bfbe", size = 24599613, upload-time = "2026-06-05T18:42:36.135Z" },
 ]
 
 [[package]]
