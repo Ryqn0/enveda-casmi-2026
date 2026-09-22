@@ -333,6 +333,49 @@ class Library:
         np.maximum.at(out, self.struct_idx, per_spectrum)
         return out
 
+    def analog_structures(
+        self,
+        precursor_mz: float,
+        peaks: np.ndarray,
+        top_n: int = 50,
+        exclude: np.ndarray | None = None,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Find library structures that are chemically RELATED to the query.
+
+        `identity_search` demands the precursor masses match, so it can only
+        find the same molecule. `hybrid_search` allows a constant mass shift
+        between query and library spectrum, which is exactly what a chemical
+        modification looks like: add a methyl group and every fragment
+        containing it moves by the same 14 Da while the rest stay put.
+
+        That makes this the tool for competition class 2 — the molecule itself
+        has no reference spectrum, but a cousin of it does.
+
+        Returns (structure indices, scores) for the top_n best analogs.
+        """
+        cleaned = self.fes.clean_spectrum_for_search(
+            precursor_mz=precursor_mz, peaks=peaks, noise_threshold=NOISE_THRESHOLD
+        )
+        if len(cleaned) == 0:
+            return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float32)
+
+        # No ms1_tolerance argument here: allowing the precursor to differ is
+        # the entire point of a hybrid search.
+        sims = self.fes.hybrid_search(
+            precursor_mz=precursor_mz, peaks=cleaned, ms2_tolerance_in_da=0.02
+        )
+        if exclude is not None and len(exclude):
+            sims = sims.copy()
+            sims[exclude] = 0.0
+
+        per_struct = np.zeros(self.n_structures, dtype=np.float32)
+        np.maximum.at(per_struct, self.struct_idx, sims)
+
+        n = min(top_n, self.n_structures)
+        top = np.argpartition(-per_struct, n - 1)[:n]
+        top = top[np.argsort(-per_struct[top])]
+        return top, per_struct[top]
+
     def rank_molecule(
         self,
         spectra: list[tuple[float, np.ndarray]],
