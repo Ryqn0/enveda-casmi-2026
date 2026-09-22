@@ -162,6 +162,59 @@ def score_candidates(logits: np.ndarray, cand_fp: np.ndarray) -> np.ndarray:
     return cand_fp @ lp + (1 - cand_fp) @ lq
 
 
+def candidate_bits(smiles_list, bit_sel: np.ndarray) -> np.ndarray:
+    """(n_cand, n_bits) 0/1 matrix on the SAME bit selection the model used.
+
+    Lives here, beside the model, so inference and validation cannot drift onto
+    different bit definitions — every score would then be computed against the
+    wrong bits and the channel would look broken for an unrelated reason.
+    """
+    from rdkit import DataStructs
+
+    from casmi.analog import morgan_fp
+
+    out = np.zeros((len(smiles_list), len(bit_sel)), dtype=np.float64)
+    for i, smi in enumerate(smiles_list):
+        fp = morgan_fp(smi)
+        if fp is None:
+            continue
+        arr = np.zeros(2048, dtype=np.uint8)
+        DataStructs.ConvertToNumpyArray(fp, arr)
+        out[i] = arr[bit_sel]
+    return out
+
+
+def predict_logits(model, spectra, adduct, adducts, instrument_id_, device="cpu",
+                   max_peaks: int = 128) -> np.ndarray:
+    """Mean fingerprint logits over all spectra of one molecule.
+
+    Pooling happens in LOGIT space: these are log-odds, and averaging log-odds
+    is the natural way to combine independent evidence about the same bit.
+    """
+    outs = []
+    for mz_val, peaks in spectra:
+        n = min(len(peaks), max_peaks)
+        order = np.argsort(peaks[:n, 0])
+        mz = np.zeros((1, max_peaks), np.float32)
+        it = np.zeros((1, max_peaks), np.float32)
+        mz[0, :n], it[0, :n] = peaks[:n, 0][order], peaks[:n, 1][order]
+        pad = np.ones((1, max_peaks), bool)
+        pad[0, :n] = False
+        with torch.no_grad():
+            z = model(
+                torch.as_tensor(mz, device=device),
+                torch.as_tensor(it, device=device),
+                torch.as_tensor(pad, device=device),
+                torch.as_tensor([mz_val], dtype=torch.float32, device=device),
+                torch.as_tensor([adducts.index(adduct) if adduct in adducts else 0],
+                                device=device),
+                torch.as_tensor([instrument_id_], device=device),
+                torch.zeros(1, device=device),
+            )
+        outs.append(z[0].float().cpu().numpy())
+    return np.mean(outs, axis=0)
+
+
 def save(model: FPNet, path, **extra) -> None:
     torch.save({"cfg": model.cfg, "state": model.state_dict(), **extra}, path)
 

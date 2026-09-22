@@ -20,8 +20,18 @@ from __future__ import annotations
 import numpy as np
 
 from casmi.analog import rank_by_analogy
+from casmi.fpnet import candidate_bits, predict_logits, score_candidates
 from casmi.library import Library
 from casmi.pool import ADDUCT_MASS, CandidatePool
+
+# How much the analog channel counts once the fingerprint model is in play.
+FPNET_ANALOG_WEIGHT = 0.25
+
+
+def _z(x: np.ndarray) -> np.ndarray:
+    """Z-score, so two differently-scaled channels can be added."""
+    s = x.std()
+    return (x - x.mean()) / s if s > 1e-12 else np.zeros_like(x)
 
 # Chosen so a confident identity match (~1.0) cannot be displaced by the best
 # realistic analog score (~0.5 * 0.5 = 0.25). Validated by checking that class-1
@@ -47,10 +57,17 @@ class CombinedRanker:
 
     def __init__(self, lib: Library, pool: CandidatePool,
                  analog_weight: float = ANALOG_WEIGHT,
-                 offset_ppm: float = MZ_OFFSET_PPM):
+                 offset_ppm: float = MZ_OFFSET_PPM,
+                 fpnet=None, fpnet_ck=None, device: str = "cpu"):
         self.lib = lib
         self.pool = pool
         self.analog_weight = analog_weight
+        # Optional so the pipeline still runs without a trained model.
+        self.fpnet = fpnet
+        self.device = device
+        if fpnet is not None:
+            self.bit_sel = np.asarray(fpnet_ck["bit_sel"])
+            self.adducts = list(fpnet_ck["adduct_list"])
         # Held on the instance rather than threaded through every call: it is a
         # property of the instrument, constant for a whole run.
         self.offset_ppm = offset_ppm
@@ -150,7 +167,27 @@ class CombinedRanker:
         if len(cand) == 0:
             return cand, np.empty(0, dtype=np.float32)
 
-        total = analog
+        if self.fpnet is None:
+            total = analog
+        else:
+            # Swept on 290 natural-product structures, read on the hard bucket
+            # (best analog Tanimoto < 0.4) because that is the regime the real
+            # test set is mostly in:
+            #   analog alone          0.6427 all / 0.4246 hard
+            #   fpnet alone           0.6946      / 0.6307
+            #   fpnet + 0.25*analog   0.7424      / 0.6567   <- chosen
+            #   fpnet + 1.00*analog   0.7105      / 0.5489
+            # A small analog weight adds real evidence; an equal one drowns the
+            # model exactly where the model is the only thing that works.
+            logits = predict_logits(
+                self.fpnet, spectra, adduct, self.adducts,
+                instrument_id_=0,   # the test set is 100% timsTOF
+                device=self.device,
+            )
+            fp_score = score_candidates(
+                logits, candidate_bits(self.pool.smiles[cand], self.bit_sel)
+            )
+            total = _z(fp_score) + FPNET_ANALOG_WEIGHT * _z(analog)
 
         n = min(k, len(cand))
         top = np.argpartition(-total, n - 1)[:n]

@@ -142,15 +142,41 @@ subprocess.run(
 # %%EMBED src/casmi/library.py
 
 # %% [markdown]
-# ## Step 5 — the ranker
+# ## Step 5 — the fingerprint model
 #
-# Ties the three together: pool for candidates, hybrid search for analogs,
-# fingerprints for ranking.
+# A set transformer that reads peaks and predicts which substructures the
+# molecule contains. Unlike analogy it needs no relative in the library, which
+# is why it wins where analogy fails: on a 290-molecule natural-product
+# holdout, MRR 0.4246 -> 0.6307 on molecules whose nearest spectral cousin is
+# chemically distant.
+#
+# Trained locally on an RTX 4080: 800k spectra, 224,744 structures, 20 epochs,
+# 5.5M parameters. The weights ship in the deps dataset.
+
+# %%EMBED src/casmi/fpnet.py
+
+# %% [markdown]
+# ## Step 6 — the ranker
+#
+# Ties everything together: pool for candidates, the model for substructure
+# evidence, hybrid search for analogy.
+#
+# The blend is `fpnet + 0.25*analog`, both z-scored. Swept on the hard bucket:
+#
+# | strategy | all | hard |
+# |---|---:|---:|
+# | analog alone | 0.6427 | 0.4246 |
+# | fpnet alone | 0.6946 | 0.6307 |
+# | **fpnet + 0.25*analog** | **0.7424** | **0.6567** |
+# | fpnet + 1.0*analog | 0.7105 | 0.5489 |
+#
+# An equal weight drowns the model exactly where the model is the only thing
+# that works.
 
 # %%EMBED src/casmi/rank.py
 
 # %% [markdown]
-# ## Step 6 — build the index
+# ## Step 7 — build the index
 #
 # ~7 minutes and ~10 GB on Kaggle's 4 vCPUs, against a 9-hour cap. Written to
 # `/tmp`, not `/kaggle/working`, because it exceeds 2 GB and `working/` is
@@ -166,8 +192,10 @@ import pandas as pd
 TRAIN = next(INPUT.rglob("train.parquet"))
 COMP = TRAIN.parent
 POOL = next(INPUT.rglob("pool.parquet"))
+FPNET = next(INPUT.rglob("fpnet.pt"))
 print("competition data:", COMP)
 print("candidate pool:  ", POOL)
+print("fingerprint model:", FPNET)
 
 INDEX = Path("/tmp/index")
 OUT = Path("/kaggle/working/submission.csv")
@@ -178,16 +206,24 @@ build(TRAIN, INDEX, TEST_MZ_RANGE, set(TEST_ADDUCTS))
 print(f"index built in {time.time() - t0:.0f}s")
 
 # %% [markdown]
-# ## Step 7 — rank every test molecule
+# ## Step 8 — rank every test molecule
 #
 # A molecule may have been measured several times at different collision
 # energies. Scoring is per molecule, so `rank` fuses them, keeping each
 # structure's best analog score across the measurements.
 
 # %%
+import torch
+
 lib = Library(INDEX)
 pool = CandidatePool(POOL)
-ranker = CombinedRanker(lib, pool)
+
+# torch ships in the Kaggle base image, so no wheel is needed for it.
+DEV = "cuda" if torch.cuda.is_available() else "cpu"
+fpnet, fpnet_ck = load(FPNET, device=DEV)
+print(f"fpnet: {fpnet_ck['cfg']['n_bits']} bits, "
+      f"val F1 {fpnet_ck.get('val_f1', float('nan')):.3f}, running on {DEV}")
+ranker = CombinedRanker(lib, pool, fpnet=fpnet, fpnet_ck=fpnet_ck, device=DEV)
 
 test = pd.read_parquet(COMP / "test.parquet")
 print(f"test:    {len(test):,} spectra / {test.molecule_id.nunique():,} molecules")
@@ -236,7 +272,7 @@ print(f"  no mass-matched candidates: {no_cand} ({no_cand / len(sub):.1%})")
 print(f"  fewer than {K} candidates:  {short} ({short / len(sub):.1%})")
 
 # %% [markdown]
-# ## Step 8 — validate the submission contract
+# ## Step 9 — validate the submission contract
 #
 # The host rejects a file that repeats a `molecule_id`, contains nulls, or gives
 # more than 25 guesses. A rejection costs a submission slot and a day, so assert

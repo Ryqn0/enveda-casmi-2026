@@ -62,6 +62,13 @@ def build_dataset() -> None:
         raise SystemExit("data/pool.parquet missing — run scripts/build_pool.py")
     shutil.copy2(pool, STAGE / "pool.parquet")
 
+    # Trained fingerprint model. torch is already in the Kaggle base image, so
+    # only the weights need shipping.
+    ckpt = ROOT / "data" / "fpnet" / "fpnet.pt"
+    if not ckpt.exists():
+        raise SystemExit("data/fpnet/fpnet.pt missing — run scripts/train_fpnet.py")
+    shutil.copy2(ckpt, STAGE / "fpnet.pt")
+
     (STAGE / "dataset-metadata.json").write_text(
         json.dumps(
             {"title": "casmi26-deps", "id": DATASET, "licenses": [{"name": "CC0-1.0"}]},
