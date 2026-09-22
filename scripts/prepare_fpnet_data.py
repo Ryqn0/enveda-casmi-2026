@@ -26,6 +26,7 @@ import pyarrow.parquet as pq
 from rdkit import DataStructs, RDLogger
 
 from casmi.analog import morgan_fp
+from casmi.fpnet import select_peaks
 from casmi.library import TEST_ADDUCTS, TEST_MZ_RANGE
 
 RDLogger.DisableLog("rdApp.*")
@@ -34,7 +35,11 @@ ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw"
 OUT = ROOT / "data" / "fpnet"
 
-MAX_PEAKS = 128          # per spectrum, most intense kept
+# 256, not 128. Measured: 69.8% of TEST spectra exceed 128 peaks and 45.8%
+# exceed 256, while 31.7% of training spectra were already hitting the 128 cap.
+# The training median is only 44, so the cost is bounded -- most spectra are
+# nowhere near the cap.
+MAX_PEAKS = 256          # per spectrum, most intense kept
 FP_SIZE = 2048           # Morgan bit vector length before selection
 
 # Bits set in fewer than this fraction of structures carry almost no signal and
@@ -157,16 +162,12 @@ def main() -> None:
                 fr = key_to_row.get(row.inchikey14)
                 if fr is None:
                     continue
-                a = np.asarray(row.ms2_mzs, dtype=np.float32)
-                b = np.asarray(row.ms2_normalized_intensities, dtype=np.float32)
-                if a.size == 0:
+                if len(row.ms2_mzs) == 0:
                     continue
-                if a.size > MAX_PEAKS:
-                    # keep the most intense, then restore m/z order
-                    idx = np.argpartition(b, -MAX_PEAKS)[-MAX_PEAKS:]
-                    a, b = a[idx], b[idx]
-                o = np.argsort(a)
-                a, b = a[o], b[o]
+                # The SAME function inference uses. Previously this logic was
+                # duplicated in predict_logits and the two drifted apart.
+                a, b = select_peaks(row.ms2_mzs, row.ms2_normalized_intensities,
+                                    MAX_PEAKS)
                 k = a.size
                 mz[w, :k], inten[w, :k], npk[w] = a, b, k
                 prec[w] = row.precursor_mz

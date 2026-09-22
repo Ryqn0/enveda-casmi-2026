@@ -162,6 +162,28 @@ def score_candidates(logits: np.ndarray, cand_fp: np.ndarray) -> np.ndarray:
     return cand_fp @ lp + (1 - cand_fp) @ lq
 
 
+def select_peaks(mzs, intensities, max_peaks: int) -> tuple[np.ndarray, np.ndarray]:
+    """The most intense `max_peaks` peaks, returned in ascending m/z order.
+
+    THE SINGLE SOURCE OF TRUTH for peak selection. Training and inference used
+    to implement this separately, and they disagreed: training took the top N by
+    intensity, inference took `peaks[:N]` — which, because arrays are stored
+    sorted by m/z, kept the LOWEST-MASS peaks and discarded every informative
+    high-mass fragment. 69.8% of test spectra exceed the cap, so most of the
+    test set was scored on the wrong half of its own spectrum.
+
+    Nothing crashed and nothing looked wrong. Two implementations of one concept
+    will drift; there is now one.
+    """
+    mz = np.asarray(mzs, dtype=np.float32)
+    it = np.asarray(intensities, dtype=np.float32)
+    if mz.size > max_peaks:
+        keep = np.argpartition(it, -max_peaks)[-max_peaks:]
+        mz, it = mz[keep], it[keep]
+    order = np.argsort(mz)
+    return mz[order], it[order]
+
+
 def candidate_bits(smiles_list, bit_sel: np.ndarray) -> np.ndarray:
     """(n_cand, n_bits) 0/1 matrix on the SAME bit selection the model used.
 
@@ -185,19 +207,29 @@ def candidate_bits(smiles_list, bit_sel: np.ndarray) -> np.ndarray:
 
 
 def predict_logits(model, spectra, adduct, adducts, instrument_id_, device="cpu",
-                   max_peaks: int = 128) -> np.ndarray:
+                   max_peaks: int = 128, collision_energies=None) -> np.ndarray:
     """Mean fingerprint logits over all spectra of one molecule.
 
     Pooling happens in LOGIT space: these are log-odds, and averaging log-odds
     is the natural way to combine independent evidence about the same bit.
+
+    `collision_energies` must be the REAL per-spectrum values. Training saw a
+    median of 32 eV with only 14.5% zeros, so passing 0 — as this function
+    silently did until the Phase 3 submission scored 0.196 against Phase 2's
+    0.240 — asks the model about an energy it effectively never saw.
     """
+    if collision_energies is None:
+        # Not a safe default; the median of the training distribution is far
+        # less wrong than 0, but callers should pass the real values.
+        collision_energies = [32.0] * len(spectra)
+
     outs = []
-    for mz_val, peaks in spectra:
-        n = min(len(peaks), max_peaks)
-        order = np.argsort(peaks[:n, 0])
+    for (mz_val, peaks), ce_val in zip(spectra, collision_energies):
+        sel_mz, sel_it = select_peaks(peaks[:, 0], peaks[:, 1], max_peaks)
+        n = len(sel_mz)
         mz = np.zeros((1, max_peaks), np.float32)
         it = np.zeros((1, max_peaks), np.float32)
-        mz[0, :n], it[0, :n] = peaks[:n, 0][order], peaks[:n, 1][order]
+        mz[0, :n], it[0, :n] = sel_mz, sel_it
         pad = np.ones((1, max_peaks), bool)
         pad[0, :n] = False
         with torch.no_grad():
@@ -209,7 +241,7 @@ def predict_logits(model, spectra, adduct, adducts, instrument_id_, device="cpu"
                 torch.as_tensor([adducts.index(adduct) if adduct in adducts else 0],
                                 device=device),
                 torch.as_tensor([instrument_id_], device=device),
-                torch.zeros(1, device=device),
+                torch.as_tensor([float(ce_val)], dtype=torch.float32, device=device),
             )
         outs.append(z[0].float().cpu().numpy())
     return np.mean(outs, axis=0)

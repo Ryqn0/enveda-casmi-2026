@@ -244,7 +244,18 @@ pool = CandidatePool(POOL)
 DEV = "cuda" if torch.cuda.is_available() else "cpu"
 fpnet, fpnet_ck = load(FPNET, device=DEV)
 print(f"fpnet: {fpnet_ck['cfg']['n_bits']} bits, "
+      f"max_peaks {fpnet_ck.get('max_peaks')}, "
+      f"val loss {fpnet_ck.get('val_loss', float('nan')):.4f}, "
       f"val F1 {fpnet_ck.get('val_f1', float('nan')):.3f}, running on {DEV}")
+
+# Kaggle can mount a STALE dataset version — v6 failed exactly that way, with
+# the listing showing the new file while the kernel had the old one. Assert the
+# model is the one we meant to ship, so a stale mount fails in seconds instead
+# of quietly scoring an 18-minute run with the wrong weights.
+assert fpnet_ck.get("max_peaks") == 256, (
+    f"expected the 256-peak model, got max_peaks={fpnet_ck.get('max_peaks')}. "
+    f"Kaggle has probably mounted an older version of casmi26-deps; re-push."
+)
 ranker = CombinedRanker(lib, pool, fpnet=fpnet, fpnet_ck=fpnet_ck, device=DEV)
 
 test = pd.read_parquet(COMP / "test.parquet")
@@ -273,7 +284,17 @@ for mid, grp in test.groupby("molecule_id", sort=True):
     spectra = [(float(r.precursor_mz), peaks_of(r)) for r in grp.itertuples()]
     adduct = grp.adduct.iloc[0]
 
-    cand, scores = ranker.rank(spectra, adduct, k=K)
+    # Real collision energies, averaged over a stepped acquisition exactly as
+    # training did. Passing 0 instead cost the previous submission: the model
+    # saw a median of 32 eV in training and only 14.5% zeros.
+    ces = [
+        float(np.mean(r.collision_energy_ev))
+        if r.collision_energy_ev is not None and len(r.collision_energy_ev)
+        else 32.0
+        for r in grp.itertuples()
+    ]
+
+    cand, scores = ranker.rank(spectra, adduct, k=K, collision_energies=ces)
 
     if len(cand) == 0:
         # No candidate of the right mass — an unrecognised adduct, or a mass

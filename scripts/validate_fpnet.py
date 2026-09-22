@@ -33,7 +33,7 @@ from prepare_fpnet_data import instrument_id  # noqa: E402
 from validate_class2 import fetch_raw, sample_structures  # noqa: E402
 
 from casmi.analog import morgan_fp, rank_by_analogy  # noqa: E402
-from casmi.fpnet import load, score_candidates  # noqa: E402
+from casmi.fpnet import load, predict_logits, score_candidates  # noqa: E402
 from casmi.library import Library  # noqa: E402
 from casmi.pool import ADDUCT_MASS, CandidatePool  # noqa: E402
 from casmi.rank import MZ_OFFSET_PPM, PPM, TOP_ANALOGS  # noqa: E402
@@ -78,7 +78,12 @@ def main() -> None:
     model, ck = load(args.model, device=dev)
     bit_sel = np.asarray(ck["bit_sel"])
     adducts = list(ck["adduct_list"])
-    print(f"model: {ck['cfg']['n_bits']} bits, val F1 {ck.get('val_f1', float('nan')):.3f}")
+    # Read the cap the model was TRAINED with. v1 predates this field, so
+    # fall back to 128, which is what it used.
+    MAX_PEAKS = int(ck.get("max_peaks", 128))
+    print(f"model: {ck['cfg']['n_bits']} bits, max_peaks {MAX_PEAKS}, "
+          f"val loss {ck.get('val_loss', float('nan')):.4f}, "
+          f"val F1 {ck.get('val_f1', float('nan')):.3f}")
 
     lib = Library(ROOT / "data" / "index")
     pool = CandidatePool(ROOT / "data" / "pool.parquet")
@@ -99,7 +104,7 @@ def main() -> None:
         rows = [r for r in h["query_rows"] if r in raw]
         if not rows:
             continue
-        mz0, adduct, _, _ = raw[rows[0]]
+        mz0, adduct, _, _, _ = raw[rows[0]]
         if adduct not in ADDUCT_MASS:
             continue
         cand = pool.query(mz0, adduct, ppm=PPM, offset_ppm=MZ_OFFSET_PPM)
@@ -111,7 +116,7 @@ def main() -> None:
         # --- analog channel ------------------------------------------------
         best = np.zeros(lib.n_structures, dtype=np.float32)
         for r in rows:
-            q_mz, _, peaks, _ = raw[r]
+            q_mz, _, peaks, _, _ = raw[r]
             idx, sc = lib.analog_structures(q_mz, peaks, top_n=TOP_ANALOGS,
                                             exclude=exclude)
             np.maximum.at(best, idx, sc)
@@ -132,31 +137,18 @@ def main() -> None:
         # --- fpnet channel --------------------------------------------------
         # Average the predicted bit probabilities across the molecule's spectra
         # in LOGIT space, which is the natural place to pool log-odds.
-        logits = []
-        for r in rows:
-            q_mz, add, peaks, instrument = raw[r]
-            n = min(len(peaks), 128)
-            o = np.argsort(peaks[:n, 0])
-            mz = np.zeros((1, 128), np.float32)
-            it = np.zeros((1, 128), np.float32)
-            mz[0, :n], it[0, :n] = peaks[:n, 0][o], peaks[:n, 1][o]
-            pad = np.ones((1, 128), bool)
-            pad[0, :n] = False
-            with torch.no_grad():
-                z = model(
-                    torch.as_tensor(mz, device=dev), torch.as_tensor(it, device=dev),
-                    torch.as_tensor(pad, device=dev),
-                    torch.as_tensor([q_mz], dtype=torch.float32, device=dev),
-                    torch.as_tensor([adducts.index(add) if add in adducts else 0],
-                                    device=dev),
-                    # The real instrument, mapped the same way training did.
-                    # Hardcoding timsTOF here would feed the model a lie on any
-                    # non-timsTOF holdout and make it look worse than it is.
-                    torch.as_tensor([instrument_id(instrument)], device=dev),
-                    torch.zeros(1, device=dev),
-                )
-            logits.append(z[0].float().cpu().numpy())
-        mean_logit = np.mean(logits, axis=0)
+        # ONE implementation, shared with the ranker and the notebook. The
+        # inline copy that used to live here is how the peak-selection and
+        # collision-energy bugs survived: duplicated preprocessing drifts.
+        mean_logit = predict_logits(
+            model,
+            [(raw[r][0], raw[r][2]) for r in rows],
+            adduct, adducts,
+            instrument_id_=instrument_id(raw[rows[0]][3]),
+            device=dev,
+            max_peaks=MAX_PEAKS,
+            collision_energies=[raw[r][4] for r in rows],
+        )
         s_fpnet = score_candidates(mean_logit, candidate_bits(pool.smiles[cand], bit_sel))
 
         # --- score all three -------------------------------------------------

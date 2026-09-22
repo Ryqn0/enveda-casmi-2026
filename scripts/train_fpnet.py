@@ -38,21 +38,74 @@ class SpectraSet(Dataset):
         return len(self.npk)
 
     def __getitem__(self, i):
+        # Return only the REAL peaks; the collator decides the padded width.
         n = int(self.npk[i])
-        # pad marks slots beyond the real peak count so attention ignores them.
-        pad = np.ones(self.mz.shape[1], dtype=bool)
-        pad[:n] = False
-        return (self.mz[i], self.inten[i], pad, self.prec[i],
+        return (self.mz[i][:n], self.inten[i][:n], self.prec[i],
                 int(self.add_id[i]), int(self.ins_id[i]), self.ce[i], self.y[i])
 
 
+class SortishBatches(torch.utils.data.Sampler):
+    """Batch spectra of similar length together, in a shuffled order.
+
+    Dynamic padding alone is not enough. ~20% of spectra sit at the 256-peak
+    cap, so at batch size 256 essentially EVERY batch contains at least one long
+    spectrum and therefore pads to 256 — exactly what dynamic padding was meant
+    to avoid.
+
+    So: shuffle, cut into large pools, sort each pool by length, and slice
+    batches from it. Spectra in a batch then have similar lengths and the padded
+    width tracks the data. The pool is shuffled each epoch and the batch order
+    is shuffled too, so batches are not identical between epochs — which pure
+    length-sorting would cause, and which harms training.
+    """
+
+    def __init__(self, lengths: np.ndarray, batch_size: int, pool_mult: int = 50,
+                 seed: int = 0):
+        self.lengths = lengths
+        self.bs = batch_size
+        self.pool = batch_size * pool_mult
+        self.rng = np.random.default_rng(seed)
+        self.n_batches = len(lengths) // batch_size
+
+    def __len__(self):
+        return self.n_batches
+
+    def __iter__(self):
+        idx = self.rng.permutation(len(self.lengths))
+        batches = []
+        for start in range(0, len(idx), self.pool):
+            chunk = idx[start : start + self.pool]
+            chunk = chunk[np.argsort(self.lengths[chunk], kind="stable")]
+            for b in range(0, len(chunk) - self.bs + 1, self.bs):
+                batches.append(chunk[b : b + self.bs].tolist())
+        self.rng.shuffle(batches)
+        yield from batches
+
+
 def collate(batch):
-    mz, it, pad, prec, add, ins, ce, y = zip(*batch)
+    """Pad each batch to ITS longest spectrum, not to the global maximum.
+
+    The cap is 256 peaks but the median spectrum has 44, so padding everything
+    to 256 would run attention — which is quadratic in sequence length — over
+    mostly padding. Batch-local padding keeps the cost proportional to the data
+    actually present.
+    """
+    mzs, its, prec, add, ins, ce, y = zip(*batch)
+    width = max(len(m) for m in mzs)
+    B = len(batch)
+
+    mz = np.zeros((B, width), dtype=np.float32)
+    it = np.zeros((B, width), dtype=np.float32)
+    pad = np.ones((B, width), dtype=bool)
+    for i, (m, v) in enumerate(zip(mzs, its)):
+        n = len(m)
+        mz[i, :n], it[i, :n] = m, v
+        pad[i, :n] = False          # True marks slots attention must ignore
+
     t = torch.as_tensor
-    return (t(np.stack(mz)), t(np.stack(it)), t(np.stack(pad)),
-            t(np.stack(prec)), t(np.array(add), dtype=torch.long),
-            t(np.array(ins), dtype=torch.long), t(np.stack(ce)),
-            t(np.stack(y), dtype=torch.float32))
+    return (t(mz), t(it), t(pad), t(np.stack(prec)),
+            t(np.array(add), dtype=torch.long), t(np.array(ins), dtype=torch.long),
+            t(np.stack(ce)), t(np.stack(y), dtype=torch.float32))
 
 
 @torch.no_grad()
@@ -108,9 +161,10 @@ def main() -> None:
     print(f"val   {len(va_idx):,} spectra / {len(val_structs):,} structures")
     assert not (set(y_row[tr_idx]) & set(y_row[va_idx])), "structure leaked across split"
 
-    tr = DataLoader(SpectraSet(d, tr_idx, fp), batch_size=args.batch, shuffle=True,
-                    collate_fn=collate, num_workers=4, drop_last=True,
-                    persistent_workers=True)
+    tr_set = SpectraSet(d, tr_idx, fp)
+    tr = DataLoader(tr_set,
+                    batch_sampler=SortishBatches(tr_set.npk, args.batch),
+                    collate_fn=collate, num_workers=4, persistent_workers=True)
     va = DataLoader(SpectraSet(d, va_idx, fp), batch_size=args.batch * 2,
                     collate_fn=collate, num_workers=2, persistent_workers=True)
 
@@ -162,8 +216,12 @@ def main() -> None:
               flush=True)
         if vl < best:
             best = vl
+            # max_peaks travels WITH the weights. Without it, inference has to
+            # guess the cap the model was trained at, and guessing 128 for a
+            # 256-peak model silently truncates every rich spectrum.
             save(model, args.out, n_bits=n_bits, bit_sel=d["bit_sel"],
-                 adduct_list=d["adduct_list"], val_loss=vl, val_f1=f1)
+                 adduct_list=d["adduct_list"], val_loss=vl, val_f1=f1,
+                 max_peaks=int(d["mz"].shape[1]), epoch=ep)
 
     print(f"best val loss {best:.4f} -> {args.out}")
 

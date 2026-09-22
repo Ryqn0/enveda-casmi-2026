@@ -25,7 +25,22 @@ from casmi.library import Library
 from casmi.pool import ADDUCT_MASS, CandidatePool
 
 # How much the analog channel counts once the fingerprint model is in play.
-FPNET_ANALOG_WEIGHT = 0.25
+#
+# 0.5, chosen on the timsTOF holdout — the TEST INSTRUMENT. The previous value
+# of 0.25 came from a natural-product holdout on the wrong instrument, and it
+# is the one weight that loses to analog alone on timsTOF (0.7510 vs 0.7817).
+# That mistake is what took the leaderboard from 0.240 to 0.196.
+#
+#   timsTOF, model v2 (256 peaks)      all      hard
+#   analog alone                     0.7817    0.3006
+#   fpnet alone                      0.7905    0.5304
+#   fpnet + 0.25*analog              0.8289    0.5261
+#   fpnet + 0.50*analog              0.8287    0.5520   <- chosen
+#   fpnet + 1.00*analog              0.8162    0.4120
+#
+# 0.25 and 0.5 tie on the overall column; 0.5 wins the hard column, which is
+# the regime the real test set is mostly in.
+FPNET_ANALOG_WEIGHT = 0.5
 
 
 def _z(x: np.ndarray) -> np.ndarray:
@@ -68,6 +83,10 @@ class CombinedRanker:
         if fpnet is not None:
             self.bit_sel = np.asarray(fpnet_ck["bit_sel"])
             self.adducts = list(fpnet_ck["adduct_list"])
+            # The cap the model was TRAINED at. Guessing 128 for a 256-peak
+            # model silently truncates every rich spectrum, and 69.8% of test
+            # spectra exceed 128 peaks.
+            self.max_peaks = int(fpnet_ck.get("max_peaks", 128))
         # Held on the instance rather than threaded through every call: it is a
         # property of the instrument, constant for a whole run.
         self.offset_ppm = offset_ppm
@@ -141,11 +160,19 @@ class CombinedRanker:
         k: int = K,
         ppm: float = PPM,
         exclude: np.ndarray | None = None,
+        collision_energies: list[float] | None = None,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Return (pool positions, scores) for the k best candidates.
 
-        Ranking is ANALOG-ONLY. Measured on a 196-molecule natural-product
-        holdout (scripts/validate_combined.py):
+        With a model loaded, ranking is `fpnet + 0.5*analog` (see
+        FPNET_ANALOG_WEIGHT). Without one it falls back to analog-only, which
+        is the configuration that scored 0.240.
+
+        `collision_energies` must be the real per-spectrum values; the model was
+        trained with them and defaults to the training median otherwise.
+
+        The analog-only choice was itself measured, on a 196-molecule
+        natural-product holdout (scripts/validate_combined.py):
 
             strategy        class 1   class 2   projected LB
             identity only    0.8765    0.0921         0.1746
@@ -183,6 +210,8 @@ class CombinedRanker:
                 self.fpnet, spectra, adduct, self.adducts,
                 instrument_id_=0,   # the test set is 100% timsTOF
                 device=self.device,
+                max_peaks=self.max_peaks,
+                collision_energies=collision_energies,
             )
             fp_score = score_candidates(
                 logits, candidate_bits(self.pool.smiles[cand], self.bit_sel)
