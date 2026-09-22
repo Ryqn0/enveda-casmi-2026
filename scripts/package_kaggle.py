@@ -6,18 +6,23 @@ does NOT ship that way: a `# %%EMBED <path>` marker expands into the notebook, s
 the notebook is self-contained and readable while `src/casmi/library.py` remains
 the single source of truth.
 
-    uv run python scripts/package_kaggle.py
+Usage — always push with --push, which regenerates first. Pushing separately is
+how v3 shipped a notebook that predated the fix it was meant to contain:
 
-Then push, in order (the notebook depends on the dataset existing):
+    uv run kaggle datasets version -p data/kaggle_deps -m "..."   # if deps changed
+    uv run python scripts/package_kaggle.py --push
 
-    kaggle datasets create -p data/kaggle_deps        # first time
-    kaggle datasets version -p data/kaggle_deps -m "..."   # updates
-    kaggle kernels push -p kaggle
+The dataset must exist and report `ready` before the kernel is pushed; a kernel
+that starts while the dataset is still processing fails with a misleading pip
+error. First time only:
+
+    uv run kaggle datasets create -p data/kaggle_deps
 """
 
 from __future__ import annotations
 
 import json
+import subprocess
 import shutil
 from pathlib import Path
 
@@ -164,9 +169,36 @@ def to_notebook() -> None:
           f"({n_md} markdown, {len(cells) - n_md} code)")
 
 
+def push() -> None:
+    """Regenerate then push, in one step.
+
+    v3 was pushed from a notebook generated 45 seconds BEFORE the source change
+    it was supposed to contain, so the fix shipped was the one from the previous
+    edit. Nothing detected it — the notebook was valid, it just held stale code,
+    and a 17-minute Kaggle run was spent proving it.
+
+    Separating "generate" from "push" makes that failure available every single
+    time. Doing both here removes the gap rather than relying on remembering.
+    """
+    subprocess.run(
+        ["kaggle", "kernels", "push", "-p", str(ROOT / "kaggle")], check=True
+    )
+
+
 if __name__ == "__main__":
+    import argparse
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--push", action="store_true",
+                    help="regenerate and push the kernel in one step")
+    args = ap.parse_args()
+
     build_dataset()
     to_notebook()
-    print("\nnext:")
-    print(f"  kaggle datasets create -p {STAGE.relative_to(ROOT)}")
-    print("  kaggle kernels push -p kaggle")
+
+    if args.push:
+        push()
+    else:
+        print("\nnext:")
+        print(f"  kaggle datasets version -p {STAGE.relative_to(ROOT)} -m '...'")
+        print("  uv run python scripts/package_kaggle.py --push")
