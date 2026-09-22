@@ -38,8 +38,8 @@ uv run python src/casmi/metric.py     # scorer self-check (asserts agreement wit
 
 - [x] Phase 0 — offline metric
 - [x] Phase 1 — library-search baseline — **public LB 0.130** (local class-1 MRR 0.845, class 3 0.000)
-- [ ] Phase 2 — candidate database (COCONUT/PubChem) — where class 2 becomes reachable
-- [ ] Phase 3 — fingerprint model
+- [x] Phase 2 — candidate pool + analog propagation — **public LB 0.240**, rank 627/1193
+- [ ] Phase 3 — fingerprint model (class 3 is ~40-58% of the test set and unreachable by retrieval)
 - [ ] Phase 4 — rank fusion
 - [ ] Phase 5 — deployed demo
 

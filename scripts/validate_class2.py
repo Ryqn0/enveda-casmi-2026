@@ -215,6 +215,29 @@ def main() -> None:
     # only holds up where a near-twin analog exists, it will not survive a test
     # set of genuinely novel natural products.
     tan = np.array(analog_tan)
+
+    # CALIBRATION, measured against the leaderboard on 2026-09-22.
+    #
+    # The aggregate MRR over this holdout reported 0.621. The actual class-2
+    # performance implied by LB 0.240 is at most 0.392 and probably nearer 0.30.
+    # The aggregate is optimistic because every holdout molecule is a PUBLISHED
+    # compound, so the training library contains its relatives. Test molecules
+    # are unpublished -- Enveda measured them precisely because nobody else had
+    # -- and analog propagation needs a spectral cousin to exist.
+    #
+    # The low-Tanimoto bucket does NOT have that problem: those molecules have
+    # no close relative in the library either, which is the situation a novel
+    # compound is actually in. It read 0.396 while the truth was 0.24-0.39.
+    #
+    # So the hard bucket is the number to optimise. The aggregate is reported
+    # below it for context only.
+    hard = tan < 0.4
+    if hard.sum():
+        print(f"\nCALIBRATED ESTIMATE (best analog Tanimoto < 0.4, n={hard.sum()}):")
+        print(f"  class-2 MRR@25 = {rr_analog[hard].mean():.4f}")
+        print("  This tracks the leaderboard. The aggregate below does not --")
+        print("  it ran 0.621 when the real value was at most 0.392.")
+
     print("\nMRR by chemical similarity of the best analog to the truth:")
     print("| analog Tanimoto | n | analog MRR | random MRR |")
     print("|---|---:|---:|---:|")
