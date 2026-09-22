@@ -42,3 +42,5 @@ uv run python src/casmi/metric.py     # scorer self-check (asserts agreement wit
 - [ ] Phase 3 — fingerprint model
 - [ ] Phase 4 — rank fusion
 - [ ] Phase 5 — deployed demo
+
+Notebook runs on Kaggle in ~8 min (see docs/05-kaggle-runtime-notes.md); submission is a notebook re-run, not a CSV upload.
