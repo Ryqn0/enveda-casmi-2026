@@ -65,9 +65,20 @@ This is a **re-run** code competition. Two distinct steps:
 1. `kaggle kernels push -p kaggle` uploads the notebook and runs it against the
    *placeholder* test set. This is a smoke test; its `submission.csv` is not
    graded.
-2. `kaggle competitions submit <comp> -k <user>/<kernel> -v <version> -m "..."`
-   makes Kaggle **re-run the notebook against the hidden test set** and score
-   that output.
+2. `kaggle competitions submit <comp> -k <user>/<kernel> -v <version>
+   -f submission.csv -m "..."` makes Kaggle **re-run the notebook against the
+   hidden test set** and score that output.
+
+   **`-f` is required and is not optional despite the help text describing it as
+   a file upload.** A notebook may write several files to `/kaggle/working`, so
+   `-f` names which one is the submission. Omitting it fails with a bare
+   `400 Client Error ... CreateCodeSubmission` and no explanation.
+
+   The scored re-run took **~9 minutes** end to end (PENDING at 13:24, COMPLETE
+   at 13:33), consistent with the 8-minute smoke run.
+
+   The `kaggle` CLI lives in the project venv, so it needs `uv run kaggle ...`
+   unless installed globally with `uv tool install kaggle`.
 
 So the notebook must not assume anything about the placeholder — not its 400
 molecules, not its 245–460 m/z range, not its 7 adducts. The real test set spans

@@ -38,6 +38,29 @@ structures, and coverage is what matters.
 identity search cannot retrieve a structure that is not in the index, and any
 leak would show up as a nonzero score here.
 
+## Confirmed on the leaderboard
+
+**Public LB 0.130** (submission 56462966, 2026-09-22), rank 959 / 1183.
+
+Predicted before submitting: **0.10–0.15**. This matters more than the score:
+the local validation harness predicts leaderboard movement, so from here we can
+evaluate ideas offline without spending submissions.
+
+### It also measures the hidden class distribution
+
+The competition deliberately hides which molecules are class 1, 2 or 3. But a
+submission that scores *only* on class 1 turns the leaderboard into a
+measurement of how much class 1 there is:
+
+    P(class 1)  =  LB / class-1 MRR  =  0.130 / 0.8446  =  15.4%
+
+So **classes 2 and 3 are ~85% of the test set**, and the ceiling for a perfect
+library-search-only approach is about **0.154**.
+
+Against the current leader at 0.415: they take at most 0.154 from class 1, so
+**at least 0.26 of their score comes from classes 2–3** — an MRR of roughly 0.31
+across that 85%. That is the entire gap, quantified.
+
 ## What this implies for the leaderboard
 
 Our candidate pool is training *structures*, which exist only because they have
