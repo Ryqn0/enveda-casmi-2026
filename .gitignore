@@ -1,0 +1,25 @@
+# data & artifacts (never in git — use Kaggle/HF Hub)
+data/
+artifacts/
+models/
+*.parquet
+*.mgf
+*.msp
+*.ckpt
+*.pt
+
+# python
+.venv/
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+.pytest_cache/
+.ruff_cache/
+
+# secrets
+.env
+kaggle.json
+*.pem
+
+# os
+.DS_Store
