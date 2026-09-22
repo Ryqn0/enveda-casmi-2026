@@ -31,14 +31,14 @@ app/        the deployed demo
 ## Verify
 
 ```bash
-uv run python src/casmi/metric.py     # offline scorer self-check
+uv run python src/casmi/metric.py     # scorer self-check (asserts agreement with the host)
 ```
 
 ## Status
 
 - [x] Phase 0 — offline metric
-- [ ] Phase 1 — library-search baseline
-- [ ] Phase 2 — candidate pool + retrieval recall
+- [x] Phase 1 — library-search baseline (class 1 MRR 0.845, class 3 0.000 — docs/03-phase1-results.md)
+- [ ] Phase 2 — candidate database (COCONUT/PubChem) — where class 2 becomes reachable
 - [ ] Phase 3 — fingerprint model
 - [ ] Phase 4 — rank fusion
 - [ ] Phase 5 — deployed demo
