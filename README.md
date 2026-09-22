@@ -39,8 +39,8 @@ uv run python src/casmi/metric.py     # scorer self-check (asserts agreement wit
 - [x] Phase 0 — offline metric
 - [x] Phase 1 — library-search baseline — **public LB 0.130** (local class-1 MRR 0.845, class 3 0.000)
 - [x] Phase 2 — candidate pool + analog propagation — **public LB 0.240**, rank 627/1193
-- [x] Phase 3 — fingerprint model — class-2 MRR 0.4246 -> 0.6567 on the hard bucket
-- [x] Phase 4 — rank fusion — fpnet + 0.25*analog, weight chosen by sweep
+- [x] Phase 3 — fingerprint model — **public LB 0.244**, rank 646/1227 (+0.004 over analog-only)
+- [x] Phase 4 — rank fusion — fpnet + 0.5*analog, weight swept on the test instrument
 - [ ] Phase 5 — deployed demo — app/app.py works locally, not yet on HF Spaces
 
 Notebook runs on Kaggle in ~8 min (see docs/05-kaggle-runtime-notes.md); submission is a notebook re-run, not a CSV upload.
