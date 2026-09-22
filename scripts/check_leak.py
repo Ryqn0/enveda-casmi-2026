@@ -22,7 +22,10 @@ import pyarrow.parquet as pq
 ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw"
 
-ATOL = 1e-6  # m/z values are stored as float64; anything looser is not "identical"
+# Exact float equality, deliberately. np.allclose would keep its default
+# rtol=1e-5, which at m/z 400 tolerates ~4 mDa — enough to call two genuinely
+# different measurements a duplicate. The claim here is identity, so the test
+# must be identity.
 
 
 def main() -> None:
@@ -39,7 +42,10 @@ def main() -> None:
     label: list[tuple | None] = [None] * len(test)
 
     pf = pq.ParquetFile(RAW / "train.parquet")
-    cols = ["normalized_smiles", "inchikey14", "precursor_mz", "ms2_mzs", "ingest_lib"]
+    cols = [
+        "normalized_smiles", "inchikey14", "precursor_mz",
+        "ms2_mzs", "ms2_normalized_intensities", "ingest_lib",
+    ]
     offset = 0
     for batch in pf.iter_batches(batch_size=100_000, columns=cols):
         df = batch.to_pandas()
@@ -47,11 +53,15 @@ def main() -> None:
             if key not in want:
                 continue
             train_mz = np.asarray(df.ms2_mzs.iloc[j], dtype=np.float64)
+            train_it = np.asarray(df.ms2_normalized_intensities.iloc[j], dtype=np.float64)
             for i in want[key]:
                 if exact[i]:
                     continue
-                q = np.asarray(test.ms2_mzs.iloc[i], dtype=np.float64)
-                if q.shape == train_mz.shape and np.allclose(q, train_mz, atol=ATOL):
+                q_mz = np.asarray(test.ms2_mzs.iloc[i], dtype=np.float64)
+                q_it = np.asarray(
+                    test.ms2_normalized_intensities.iloc[i], dtype=np.float64
+                )
+                if np.array_equal(q_mz, train_mz) and np.array_equal(q_it, train_it):
                     exact[i] = True
                     match_row[i] = offset + j
                     label[i] = (

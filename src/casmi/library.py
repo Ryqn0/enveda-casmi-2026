@@ -26,6 +26,19 @@ from ms_entropy import FlashEntropySearch
 MAX_PEAKS = 128
 NOISE_THRESHOLD = 0.01  # drop peaks below 1% of the base peak
 
+# The real test set, per the competition data description — NOT derived from the
+# shipped test.parquet, which is a placeholder built from training rows and is
+# both narrower (245-460 m/z, 7 adducts) and replaced at re-run.
+TEST_ADDUCTS = frozenset(
+    {
+        "[M+H]+", "[M+NH4]+", "[M-H2O+H]+", "[M-2H2O+H]+", "[M+Na]+", "[M+K]+",
+        "[M-H]-", "[M-H2O-H]-", "[M+CH2O2-H]-", "[M+Cl]-",
+    }
+)
+# Monoisotopic masses run 157-1159 Da; adduct offsets span roughly -19 to +46,
+# so precursor m/z can fall anywhere in this window. Padded either side.
+TEST_MZ_RANGE = (130.0, 1220.0)
+
 LIB_COLUMNS = [
     "inchikey14",
     "normalized_smiles",

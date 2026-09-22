@@ -13,16 +13,10 @@ import argparse
 import time
 from pathlib import Path
 
-import pandas as pd
-
-from casmi.library import build
+from casmi.library import TEST_ADDUCTS, TEST_MZ_RANGE, build
 
 ROOT = Path(__file__).resolve().parents[1]
 RAW = ROOT / "data" / "raw"
-
-# Widen the test mass window slightly: the library is matched on precursor mass,
-# and a structure seen at the window edge is still a valid candidate.
-MZ_MARGIN = 5.0
 
 
 def main() -> None:
@@ -32,9 +26,10 @@ def main() -> None:
     ap.add_argument("--out", type=Path, default=ROOT / "data" / "index")
     args = ap.parse_args()
 
-    test = pd.read_parquet(RAW / "test.parquet")
-    mz_range = (test.precursor_mz.min() - MZ_MARGIN, test.precursor_mz.max() + MZ_MARGIN)
-    adducts = set(test.adduct.unique())
+    # Deliberately NOT read off test.parquet: that file is a placeholder made of
+    # training rows and is replaced by the real test set at re-run. Fitting the
+    # library filter to it would silently exclude most of the real test range.
+    mz_range, adducts = TEST_MZ_RANGE, set(TEST_ADDUCTS)
     print(f"library filter: m/z {mz_range[0]:.1f}-{mz_range[1]:.1f}, "
           f"{len(adducts)} adducts -> {args.out}")
 
