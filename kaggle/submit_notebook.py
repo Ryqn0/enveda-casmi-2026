@@ -60,10 +60,34 @@ rather than importing a copy that could drift.
 # `!pip` runs whichever pip is first on `PATH`, which is not guaranteed to belong
 # to the Python actually running the notebook. `sys.executable -m pip` installs
 # into *this* interpreter, always.
+#
+# **Paths are discovered, not hardcoded.** Version 1 of this notebook failed
+# because it assumed where the wheels and the competition data would be mounted,
+# and was wrong about both. Searching for the files by name costs nothing and
+# cannot go stale.
 
 # %%
 import subprocess  # lets Python run another program and wait for it to finish
 import sys         # sys.executable is the full path to the running Python
+from pathlib import Path
+
+INPUT = Path("/kaggle/input")
+
+# Print what is actually mounted. If anything below fails, this is the first
+# thing to look at, so it goes in the log before any assumption is made.
+print("mounted under /kaggle/input:")
+for p in sorted(INPUT.glob("*")):
+    print("  ", p.name, "(dir)" if p.is_dir() else "")
+
+# Find the directory holding the .whl files, wherever the dataset got mounted.
+# rglob walks subdirectories too, so a nested layout still works.
+wheel_dirs = sorted({p.parent for p in INPUT.rglob("*.whl")})
+assert wheel_dirs, (
+    "no .whl found under /kaggle/input — is the casmi26-deps dataset attached, "
+    "and had it finished processing before this notebook was run?"
+)
+WHEELS = wheel_dirs[0]
+print("wheels:", WHEELS)
 
 subprocess.run(
     [
@@ -76,7 +100,7 @@ subprocess.run(
         # --find-links: look for packages in this local folder instead. It holds
         # wheels for Python 3.10-3.13, so this survives Kaggle upgrading its
         # base image.
-        "--find-links=/kaggle/input/casmi26-deps",
+        f"--find-links={WHEELS}",
         "ms_entropy",        # the package we want
     ],
     check=True,  # raise immediately if pip fails, rather than failing later
@@ -118,20 +142,25 @@ subprocess.run(
 
 # %%
 import time                 # to report how long each stage took
-from pathlib import Path    # Path objects handle "/" joining across platforms
 
 import numpy as np
 import pandas as pd
 
-# Kaggle mounts competition data read-only at this fixed location.
-COMP = Path("/kaggle/input/enveda-CASMI26-molecule-id-mass-spectra")
+# Locate the competition data by looking for the file itself, rather than
+# assuming the mount path. Kaggle nests competition inputs one level deeper than
+# datasets (/kaggle/input/competitions/<slug>/), which is exactly the kind of
+# detail that is easy to get wrong and expensive to discover mid-run.
+TRAIN = next(INPUT.rglob("train.parquet"))
+COMP = TRAIN.parent
+print("competition data:", COMP)
+
 INDEX = Path("/tmp/index")                        # scratch space, not collected
 OUT = Path("/kaggle/working/submission.csv")      # the graded file
 K = 25                                            # candidates per molecule
 
 t0 = time.time()
 build(
-    COMP / "train.parquet",
+    TRAIN,
     INDEX,
     TEST_MZ_RANGE,        # (130.0, 1220.0) — the real test mass window
     set(TEST_ADDUCTS),    # the 10 adducts the real test set uses
