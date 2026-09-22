@@ -188,13 +188,35 @@ import time
 import numpy as np
 import pandas as pd
 
-# Find the competition data by the file itself rather than assuming the path.
-TRAIN = next(INPUT.rglob("train.parquet"))
+def find_one(name: str) -> Path:
+    """Locate a required input by filename, or fail with a usable message.
+
+    `next(INPUT.rglob(name))` raises a bare StopIteration that says nothing
+    about what went wrong. v6 died that way: the kernel had mounted the
+    PREVIOUS version of the deps dataset, which predated fpnet.pt. The dataset
+    reported `ready` before the push, so `ready` is not sufficient — the
+    version takes longer to reach the kernel runtime.
+
+    Listing what IS present turns a one-word exception into a diagnosis.
+    """
+    hits = sorted(INPUT.rglob(name))
+    if not hits:
+        have = sorted(p.name for p in INPUT.rglob("*") if p.is_file())[:40]
+        raise FileNotFoundError(
+            f"{name!r} not found under /kaggle/input. If this is a dataset file "
+            f"just uploaded, the kernel may have mounted an older version — "
+            f"re-push after the new version propagates. Present: {have}"
+        )
+    return hits[0]
+
+
+# Find inputs by filename rather than assuming the mount path.
+TRAIN = find_one("train.parquet")
 COMP = TRAIN.parent
-POOL = next(INPUT.rglob("pool.parquet"))
-FPNET = next(INPUT.rglob("fpnet.pt"))
-print("competition data:", COMP)
-print("candidate pool:  ", POOL)
+POOL = find_one("pool.parquet")
+FPNET = find_one("fpnet.pt")
+print("competition data: ", COMP)
+print("candidate pool:   ", POOL)
 print("fingerprint model:", FPNET)
 
 INDEX = Path("/tmp/index")

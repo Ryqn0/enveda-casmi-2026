@@ -103,8 +103,13 @@ def to_notebook() -> None:
             # `from casmi.x import y` lines refer to a package that does not
             # exist there — and the symbols are already defined by an earlier
             # cell. Drop those imports; embed order supplies the dependency.
+            # lstrip() first: function-level imports are INDENTED. v7 shipped
+            # with `    from casmi.analog import morgan_fp` inside a function
+            # body, survived the strip, and died with ModuleNotFoundError on
+            # the first molecule ranked — 8 minutes into the run.
             text = "\n".join(
-                ln for ln in text.splitlines() if not ln.startswith("from casmi.")
+                ln for ln in text.splitlines()
+                if not ln.lstrip().startswith("from casmi.")
             )
             chunk = text
             print(f"embedded {target.relative_to(ROOT)} ({len(chunk.splitlines())} lines)")
@@ -174,6 +179,22 @@ def to_notebook() -> None:
     n_md = sum(c["cell_type"] == "markdown" for c in cells)
     print(f"wrote {NOTEBOOK.relative_to(ROOT)} — {len(cells)} cells "
           f"({n_md} markdown, {len(cells) - n_md} code)")
+
+    # There is no `casmi` package inside the notebook, so any surviving
+    # reference is a ModuleNotFoundError waiting to happen — and it will happen
+    # on Kaggle, minutes into a run, not here. Fail now instead.
+    for cell in cells:
+        if cell["cell_type"] != "code":
+            continue
+        for i, line in enumerate(cell["source"]):
+            if "casmi." in line and "import" in line:
+                raise SystemExit(
+                    f"notebook still imports from `casmi` (line {i}): "
+                    f"{line.strip()!r}\nThe embed strips these, but only ones it "
+                    f"recognises. Move the import to module level or extend the "
+                    f"strip rule."
+                )
+    print("checked: no `casmi` imports survive in the notebook")
 
 
 def push() -> None:
