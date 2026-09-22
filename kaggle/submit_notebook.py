@@ -2,248 +2,256 @@
 
 Kept as .py so it diffs and lints like code; `scripts/package_kaggle.py` turns it
 into .ipynb. Cells split on `# %%`. The line `# %%EMBED <path>` is replaced with
-the full contents of that file, so the notebook ships the real library code
-rather than importing a copy that could drift.
+the full contents of that file (with its `from casmi.` imports stripped, since
+every embedded module shares one namespace), so the notebook ships the real
+library code rather than a copy that could drift.
 """
 
 # %% [markdown]
-# # CASMI 2026 — spectral library baseline
+# # CASMI 2026 — analog propagation over a candidate pool
 #
 # **Goal:** given tandem mass spectra of an unknown molecule, output 25 candidate
 # structures as SMILES, best guess first.
 #
-# ## How this notebook works, end to end
+# ## Why this version exists
 #
-# 1. **Install `ms_entropy`** from wheels attached as a dataset (internet is off).
-# 2. **Build a searchable index** of ~2.1M training spectra.
-# 3. **For each test molecule**, score every known structure against its spectra.
-# 4. **Write `submission.csv`** — 25 SMILES per molecule, semicolon-separated.
+# The previous submission scored **0.130** using spectral library search. That
+# approach can only return a structure that already has a reference spectrum,
+# and the score told us exactly how rare that is:
 #
-# ## The core idea
+#     P(class 1) = LB / class-1 MRR = 0.130 / 0.845 = 15.4%
 #
-# A mass spectrometer smashes a molecule and weighs the pieces. The result is a
-# list of `(fragment mass, height)` pairs — a fingerprint of how the molecule
-# breaks apart. Two measurements of the *same* molecule produce similar lists.
+# So **~85% of the test set was unreachable**. This version targets it.
 #
-# So: find the training spectrum our unknown most resembles, and return that
-# molecule's structure. That is all "library search" means.
+# ## The three difficulty classes
 #
-# ## What this can and cannot do
-#
-# The competition sorts test molecules into three classes:
-#
-# | Class | Meaning | This notebook |
+# | Class | Meaning | Reachable how |
 # |---|---|---|
-# | 1 | Public reference spectra exist | **Works well** — local MRR 0.845 |
-# | 2 | Structure known, but no public spectra | **Scores 0** |
-# | 3 | Structure unknown to chemistry | **Scores 0** |
+# | 1 | Public reference spectra exist | library search |
+# | 2 | Structure known (PubChem/COCONUT), no spectra | **candidate pool + analogy** |
+# | 3 | Structure unknown to chemistry | neither — in no database |
 #
-# Classes 2 and 3 score zero *by construction*, not because the similarity
-# function is weak. This notebook can only return structures that are already in
-# the training set, and those classes are defined by being absent from it.
-# Reaching class 2 needs a structure **database** (PubChem/COCONUT) as the
-# candidate pool — that is the next phase, not a tuning problem.
+# ## The method
+#
+# 1. **Candidate pool.** Subtract the adduct from the measured precursor to get
+#    the neutral mass, then take every structure of that mass from COCONUT plus
+#    the training set. ~34–70 candidates, and the answer is among them 95% of
+#    the time.
+# 2. **Find an analog.** `hybrid_search` matches spectra that differ by a
+#    *constant mass shift* — the signature of a chemical modification. Add a
+#    methyl group and every fragment containing it moves by the same 14 Da. This
+#    finds a known relative even when the molecule itself was never measured.
+# 3. **Rank by chemical resemblance.** Score each candidate by Tanimoto
+#    similarity to the analog, weighted by how well the analog matched.
+#
+# The unknown is never identified directly. It is located by triangulation from
+# a known neighbour.
+#
+# ## Measured on a 196-molecule natural-product holdout
+#
+# | strategy | class 1 | class 2 |
+# |---|---:|---:|
+# | identity only (previous submission) | 0.8765 | 0.0921 |
+# | linear blend w=4 | 0.8994 | 0.5320 |
+# | gated t=0.7 | 0.8986 | 0.5977 |
+# | **analog only (this notebook)** | 0.8955 | **0.6207** |
+#
+# Ranking is analog-only because **hybrid search subsumes identity search**: a
+# zero-mass-shift hybrid match *is* an identity match, with self-Tanimoto 1.0.
+# The identity channel adds nothing on class 1 and actively harms class 2, where
+# the true answer has no spectrum and scores 0 while wrong candidates that happen
+# to be in the library score above it.
 
 # %% [markdown]
-# ## Step 1 — install the dependency, offline
+# ## Step 1 — install dependencies offline
 #
-# **On `!pip install`:** it does work in a Kaggle notebook *while you are
-# editing*, because you can switch internet on in the sidebar. But this
-# competition requires **internet disabled** for submission, and with the network
-# off `pip` cannot reach PyPI — `!pip install ms_entropy` would fail during
-# scoring, after the run had already burned its time.
+# **On `!pip install`:** it works while you are *editing* a notebook, because
+# internet can be switched on in the sidebar. But this competition scores with
+# **internet disabled**, so `pip` cannot reach PyPI and the install would fail
+# mid-run. Dependencies must therefore be shipped as files.
 #
-# The fix is to ship the package as a file and point pip at it. This is exactly
-# what the competition's own metric notebook does for RDKit.
+# RDKit is pinned to **2026.3.3**, the version the host scores with. The metric
+# notebook states the pin "decides which submissions match; it is not a
+# convenience" — tautomer canonicalization changes between releases, so a
+# different version can produce a correct answer that fails to match.
 #
-# One more detail: we call pip through `sys.executable` rather than `!pip`.
-# `!pip` runs whichever pip is first on `PATH`, which is not guaranteed to belong
-# to the Python actually running the notebook. `sys.executable -m pip` installs
-# into *this* interpreter, always.
-#
-# **Paths are discovered, not hardcoded.** Version 1 of this notebook failed
-# because it assumed where the wheels and the competition data would be mounted,
-# and was wrong about both. Searching for the files by name costs nothing and
-# cannot go stale.
+# Paths are **discovered, not hardcoded**: inputs mount at
+# `/kaggle/input/datasets/<user>/<name>` and `/kaggle/input/competitions/<slug>`,
+# both deeper than the commonly-cited `/kaggle/input/<name>`.
 
 # %%
-import subprocess  # lets Python run another program and wait for it to finish
-import sys         # sys.executable is the full path to the running Python
+import subprocess  # runs another program and waits for it to finish
+import sys         # sys.executable is the path of the running Python
 from pathlib import Path
 
 INPUT = Path("/kaggle/input")
 
-# Print what is actually mounted. If anything below fails, this is the first
-# thing to look at, so it goes in the log before any assumption is made.
+# Log what is actually mounted before assuming anything. If a later cell fails,
+# this is the first thing to read.
 print("mounted under /kaggle/input:")
 for p in sorted(INPUT.glob("*")):
-    print("  ", p.name, "(dir)" if p.is_dir() else "")
+    print("  ", p.name)
 
-# Find the directory holding the .whl files, wherever the dataset got mounted.
-# rglob walks subdirectories too, so a nested layout still works.
+# Locate the wheels wherever the dataset landed. rglob searches subdirectories.
 wheel_dirs = sorted({p.parent for p in INPUT.rglob("*.whl")})
 assert wheel_dirs, (
-    "no .whl found under /kaggle/input — is the casmi26-deps dataset attached, "
-    "and had it finished processing before this notebook was run?"
+    "no .whl under /kaggle/input — is the casmi26-deps dataset attached, and had "
+    "it finished processing before this notebook was run?"
 )
 WHEELS = wheel_dirs[0]
 print("wheels:", WHEELS)
 
 subprocess.run(
     [
-        sys.executable,      # this exact Python, not whatever is on PATH
-        "-m", "pip",         # "-m" runs a module as a script: python -m pip
-        "install",
-        # --no-index: never contact PyPI. Without it pip would try the network,
-        # hang, and fail once internet is disabled.
-        "--no-index",
-        # --find-links: look for packages in this local folder instead. It holds
-        # wheels for Python 3.10-3.13, so this survives Kaggle upgrading its
-        # base image.
-        f"--find-links={WHEELS}",
-        "ms_entropy",        # the package we want
+        sys.executable,              # this interpreter, not whatever is on PATH
+        "-m", "pip", "install",
+        "--no-index",                # never contact PyPI
+        f"--find-links={WHEELS}",    # resolve from the local directory instead
+        # RDKit's only real needs are numpy and Pillow, both already present.
+        # Without --no-deps the resolver would hunt for them and, with
+        # --no-index, find nowhere to look.
+        "--no-deps",
+        "ms_entropy", "rdkit",
     ],
-    check=True,  # raise immediately if pip fails, rather than failing later
-                 # with a confusing ImportError
+    check=True,  # fail here with pip's message, not later with an ImportError
 )
 
 # %% [markdown]
-# ## Step 2 — the library code
+# ## Step 2 — the candidate pool
 #
-# The whole pipeline is below, commented line by line. It is embedded rather than
-# imported so this notebook is self-contained and readable on its own.
+# Converts a measured ion back to the neutral mass of the molecule, then looks
+# that mass up in a sorted table of 722,737 structures (COCONUT + training).
+
+# %%EMBED src/casmi/pool.py
+
+# %% [markdown]
+# ## Step 3 — chemical similarity
 #
-# The three things worth understanding before you read it:
+# Morgan fingerprints turn a structure into a bit vector of its substructures;
+# Tanimoto measures overlap. This is what "chemically resembles" means
+# numerically.
+
+# %%EMBED src/casmi/analog.py
+
+# %% [markdown]
+# ## Step 4 — the spectral library
 #
-# - **Entropy similarity** compares two peak lists and returns 0–1. It weights
-#   peaks by how informative they are, so a handful of distinctive fragments
-#   count for more than many common ones.
-# - **The index sorts spectra by precursor mass**, so a query only gets compared
-#   against spectra that could plausibly be the same molecule. This is what makes
-#   searching 2.1M spectra fast enough to be practical.
-# - **Scores collapse from spectra to structures.** A famous molecule may have
-#   hundreds of library spectra; it is judged by its single best match, not its
-#   average, so being well-studied is not a penalty.
+# Builds a Flash Entropy index over the training spectra and exposes both
+# searches: `score_spectrum` (identity) and `analog_structures` (hybrid).
 
 # %%EMBED src/casmi/library.py
 
 # %% [markdown]
-# ## Step 3 — build the index
+# ## Step 5 — the ranker
 #
-# This reads `train.parquet` in 50,000-row batches, keeps the rows that could
-# match a test molecule, and builds the search structure.
+# Ties the three together: pool for candidates, hybrid search for analogs,
+# fingerprints for ranking.
+
+# %%EMBED src/casmi/rank.py
+
+# %% [markdown]
+# ## Step 6 — build the index
 #
-# Expect roughly **6 minutes and ~10 GB of RAM** locally. Kaggle gives 4 CPUs
-# (versus 32 here) so it will be slower, but the budget is 9 hours — there is
-# ample headroom.
-#
-# The index is written to `/tmp`, **not** `/kaggle/working`: it is over 2 GB, and
-# everything in `working/` is collected and stored as the notebook's output.
+# ~7 minutes and ~10 GB on Kaggle's 4 vCPUs, against a 9-hour cap. Written to
+# `/tmp`, not `/kaggle/working`, because it exceeds 2 GB and `working/` is
+# collected as the notebook's output.
 
 # %%
-import time                 # to report how long each stage took
+import time
 
 import numpy as np
 import pandas as pd
 
-# Locate the competition data by looking for the file itself, rather than
-# assuming the mount path. Kaggle nests competition inputs one level deeper than
-# datasets (/kaggle/input/competitions/<slug>/), which is exactly the kind of
-# detail that is easy to get wrong and expensive to discover mid-run.
+# Find the competition data by the file itself rather than assuming the path.
 TRAIN = next(INPUT.rglob("train.parquet"))
 COMP = TRAIN.parent
+POOL = next(INPUT.rglob("pool.parquet"))
 print("competition data:", COMP)
+print("candidate pool:  ", POOL)
 
-INDEX = Path("/tmp/index")                        # scratch space, not collected
-OUT = Path("/kaggle/working/submission.csv")      # the graded file
-K = 25                                            # candidates per molecule
+INDEX = Path("/tmp/index")
+OUT = Path("/kaggle/working/submission.csv")
+K = 25
 
 t0 = time.time()
-build(
-    TRAIN,
-    INDEX,
-    TEST_MZ_RANGE,        # (130.0, 1220.0) — the real test mass window
-    set(TEST_ADDUCTS),    # the 10 adducts the real test set uses
-)
+build(TRAIN, INDEX, TEST_MZ_RANGE, set(TEST_ADDUCTS))
 print(f"index built in {time.time() - t0:.0f}s")
 
 # %% [markdown]
-# ## Step 4 — rank candidates for every test molecule
+# ## Step 7 — rank every test molecule
 #
 # A molecule may have been measured several times at different collision
-# energies. The competition scores **per molecule**, so those spectra must be
-# fused into one ranked list — `rank_molecule` averages their scores.
+# energies. Scoring is per molecule, so `rank` fuses them, keeping each
+# structure's best analog score across the measurements.
 
 # %%
-lib = Library(INDEX)                        # load the index we just wrote
-test = pd.read_parquet(COMP / "test.parquet")
+lib = Library(INDEX)
+pool = CandidatePool(POOL)
+ranker = CombinedRanker(lib, pool)
 
+test = pd.read_parquet(COMP / "test.parquet")
 print(f"test:    {len(test):,} spectra / {test.molecule_id.nunique():,} molecules")
 print(f"library: {len(lib.meta):,} spectra / {lib.n_structures:,} structures")
+print(f"pool:    {len(pool):,} structures")
 
 
 def peaks_of(row) -> np.ndarray:
-    """Turn one test row's two parallel arrays into the (N, 2) shape we need."""
+    """One test row's two parallel arrays as the (N, 2) shape ms_entropy wants."""
     return np.stack(
         [
             np.asarray(row.ms2_mzs, dtype=np.float32),
             np.asarray(row.ms2_normalized_intensities, dtype=np.float32),
         ],
-        axis=1,  # stack side by side as columns: [[mz, intensity], ...]
+        axis=1,
     )
 
 
 # %%
 t0 = time.time()
-rows = []       # one entry per molecule, becomes the submission
-no_match = 0    # molecules where nothing in the library resembled the query
+rows, no_cand, short = [], 0, 0
 
-# groupby gathers all spectra sharing a molecule_id. sort=True makes the output
-# order deterministic, so two runs produce identical files.
+# sort=True keeps the output order deterministic between runs.
 for mid, grp in test.groupby("molecule_id", sort=True):
-    # Every measurement of this molecule, as (precursor mass, peaks).
-    queries = [(float(r.precursor_mz), peaks_of(r)) for r in grp.itertuples()]
+    spectra = [(float(r.precursor_mz), peaks_of(r)) for r in grp.itertuples()]
+    adduct = grp.adduct.iloc[0]
 
-    # top = indices of the 25 best structures; scores = their fused similarities.
-    top, scores = lib.rank_molecule(queries, k=K)
+    cand, scores = ranker.rank(spectra, adduct, k=K)
 
-    # A top score of exactly 0 means no library spectrum shared any peaks — very
-    # likely a class 2 or 3 molecule. Counting these tells us how much of the
-    # test set is out of this approach's reach.
-    if scores[0] == 0:
-        no_match += 1
+    if len(cand) == 0:
+        # No candidate of the right mass — an unrecognised adduct, or a mass
+        # outside the pool. Never leave the row empty: a wrong guess costs
+        # nothing beyond the rank it occupies, and an empty field is rejected.
+        no_cand += 1
+        smiles = list(pool.smiles[:K])
+    else:
+        smiles = list(pool.smiles[cand])
 
-    # The submission format joins candidates with ";" into one field.
-    rows.append({"molecule_id": mid, "smiles": ";".join(lib.smiles[top])})
+    if len(smiles) < K:
+        short += 1
+    rows.append({"molecule_id": mid, "smiles": ";".join(smiles)})
 
 sub = pd.DataFrame(rows)
 print(f"ranked {len(sub):,} molecules in {time.time() - t0:.0f}s")
-print(f"  no spectral match at all: {no_match} ({no_match / len(sub):.1%})")
+print(f"  no mass-matched candidates: {no_cand} ({no_cand / len(sub):.1%})")
+print(f"  fewer than {K} candidates:  {short} ({short / len(sub):.1%})")
 
 # %% [markdown]
-# ## Step 5 — check the submission before writing it
+# ## Step 8 — validate the submission contract
 #
 # The host rejects a file that repeats a `molecule_id`, contains nulls, or gives
-# more than 25 guesses. A rejection costs a submission slot and a day, so every
-# rule is asserted here first — failing loudly now is much cheaper.
+# more than 25 guesses. A rejection costs a submission slot and a day, so assert
+# every rule before writing.
 
 # %%
-# Each molecule must appear exactly once.
 assert not sub.molecule_id.duplicated().any(), "duplicate molecule_id"
-
-# Neither column may contain nulls.
 assert sub.smiles.notna().all() and sub.molecule_id.notna().all(), "null value"
 
-# Guess count = number of ";" separators + 1.
-counts = sub.smiles.str.count(";") + 1
+counts = sub.smiles.str.count(";") + 1   # guesses = separators + 1
 assert counts.max() <= K, f"{counts.max()} guesses for one molecule, max {K}"
 assert counts.min() >= 1, "a molecule has no guesses"
-
-# Every test molecule predicted, and nothing invented.
 assert set(sub.molecule_id) == set(test.molecule_id), "molecule_id set mismatch"
 
-# index=False stops pandas writing its row numbers as an extra unnamed column,
-# which would break the expected two-column format.
+# index=False stops pandas writing row numbers as a third, unnamed column.
 sub.to_csv(OUT, index=False)
 
 print(f"wrote {OUT}")

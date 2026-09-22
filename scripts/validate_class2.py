@@ -36,23 +36,50 @@ PPM = 5.0
 K = 25
 
 
-def sample_structures(lib: Library, pool: CandidatePool, n: int, seed: int):
-    """Pick timsTOF structures that are present in the candidate pool."""
+def sample_structures(lib: Library, pool: CandidatePool, n: int, seed: int,
+                      sources: set[str] | None = None):
+    """Pick structures present in the candidate pool, optionally by source library.
+
+    Default is timsTOF, matching the test instrument. But in this dataset only
+    `enveda-180` and `enveda-np-examples` are timsTOF, and enveda-180 is a
+    congeneric screening library — many close structural cousins measured
+    together. Analog propagation will look better there than on natural
+    products, so `sources` allows sampling from the public natural-product
+    libraries instead, at the cost of an instrument mismatch.
+    """
     m = lib.meta
-    tims = m[m.instrument_type.eq("timsTOF")]
-    per_struct = tims.groupby("struct_idx").row_id.apply(list)
+    if sources:
+        ingest = pq.read_table(
+            RAW / "train.parquet", columns=["ingest_lib"]
+        ).to_pandas().ingest_lib.to_numpy()
+        row_lib = ingest[m.row_id.to_numpy()]
+        sel = m[np.isin(row_lib, list(sources))]
+        print(f"restricted to {sorted(sources)}: {len(sel):,} spectra")
+    else:
+        sel = m[m.instrument_type.eq("timsTOF")]
+    per_struct = sel.groupby("struct_idx").row_id.apply(list)
 
     in_pool = set(pool.key)
     keys = lib.structures.inchikey14.to_numpy()
     eligible = per_struct[[keys[s] in in_pool for s in per_struct.index]]
 
+    # At least 2 spectra, and never take them all as queries. Class 2 hides
+    # every spectrum anyway, but the SAME sampler feeds the class-1 case, where
+    # consuming all of them leaves nothing in the library to match against and
+    # silently turns class 1 into class 2. That bug already cost one round of
+    # wrong numbers; the guard belongs here, not in the caller.
+    eligible = eligible[eligible.map(len) >= 2]
+
     rng = np.random.default_rng(seed)
     chosen = rng.choice(eligible.index.to_numpy(), size=min(n, len(eligible)),
                         replace=False)
-    return [
-        {"struct_idx": int(s), "query_rows": list(rng.permutation(eligible.loc[s])[:MAX_QUERY_SPECTRA])}
-        for s in chosen
-    ]
+    out = []
+    for s in chosen:
+        ids = eligible.loc[s]
+        take = list(rng.permutation(ids)[: min(MAX_QUERY_SPECTRA, len(ids) - 1)])
+        assert 0 < len(take) < len(ids), "queries must leave a spectrum behind"
+        out.append({"struct_idx": int(s), "query_rows": take})
+    return out
 
 
 def fetch_raw(row_ids: set[int]) -> dict:
@@ -90,13 +117,16 @@ def main() -> None:
     ap.add_argument("-n", type=int, default=150)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--ppm", type=float, default=PPM)
+    ap.add_argument("--source", default=None,
+                    help="comma-separated ingest_lib values, e.g. gnps,massbank,mona,riken")
     args = ap.parse_args()
 
     lib = Library(ROOT / "data" / "index")
     pool = CandidatePool(ROOT / "data" / "pool.parquet")
     print(f"library {len(lib.meta):,} spectra | pool {len(pool):,} structures")
 
-    holdout = sample_structures(lib, pool, args.n, args.seed)
+    sources = set(args.source.split(",")) if args.source else None
+    holdout = sample_structures(lib, pool, args.n, args.seed, sources)
     print(f"holdout: {len(holdout)} structures")
 
     needed = {int(r) for h in holdout for r in h["query_rows"]}
@@ -144,10 +174,14 @@ def main() -> None:
         # This decides whether the score is real or an artefact of the holdout:
         # a training library full of near-congeners would hand us analogs that a
         # genuinely novel natural product would never have.
+        # Over ALL analogs used for ranking, not just the top few: a near-twin
+        # sitting at rank 40 still contributes to the score, so measuring only
+        # the top 10 would file that molecule under "distant" and understate how
+        # much the result depends on close relatives.
         truth_fp = morgan_fp(lib.smiles[s])
         best_tan = 0.0
         if truth_fp is not None:
-            for a in a_idx[:10]:
+            for a in a_idx:
                 afp = morgan_fp(lib.smiles[a])
                 if afp is not None:
                     best_tan = max(best_tan, DataStructs.TanimotoSimilarity(truth_fp, afp))

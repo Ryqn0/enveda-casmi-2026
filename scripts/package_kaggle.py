@@ -49,6 +49,14 @@ def build_dataset() -> None:
     for w in wheels:
         shutil.copy2(w, STAGE / w.name)
 
+    # The candidate pool ships pre-built: rebuilding it on Kaggle would mean
+    # uploading the 577 MB COCONUT dump to save 34 MB. Reproducible from source
+    # with scripts/build_pool.py.
+    pool = ROOT / "data" / "pool.parquet"
+    if not pool.exists():
+        raise SystemExit("data/pool.parquet missing — run scripts/build_pool.py")
+    shutil.copy2(pool, STAGE / "pool.parquet")
+
     (STAGE / "dataset-metadata.json").write_text(
         json.dumps(
             {"title": "casmi26-deps", "id": DATASET, "licenses": [{"name": "CC0-1.0"}]},
@@ -78,7 +86,15 @@ def to_notebook() -> None:
         # second copy that could fall out of step with the repo.
         if chunk.startswith("EMBED "):
             target = ROOT / chunk.split(maxsplit=1)[1].strip().splitlines()[0]
-            chunk = target.read_text().strip("\n")
+            text = target.read_text().strip("\n")
+            # Embedded modules share one notebook namespace, so their
+            # `from casmi.x import y` lines refer to a package that does not
+            # exist there — and the symbols are already defined by an earlier
+            # cell. Drop those imports; embed order supplies the dependency.
+            text = "\n".join(
+                ln for ln in text.splitlines() if not ln.startswith("from casmi.")
+            )
+            chunk = text
             print(f"embedded {target.relative_to(ROOT)} ({len(chunk.splitlines())} lines)")
 
         is_md = chunk.startswith("[markdown]")
