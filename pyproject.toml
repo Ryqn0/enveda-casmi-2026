@@ -13,6 +13,7 @@ dependencies = [
     "kagglehub",
     "kaggle",
     "ms-entropy>=1.5.2",
+    "torch>=2.14.0",
 ]
 
 [project.optional-dependencies]

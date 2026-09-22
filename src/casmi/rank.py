@@ -28,8 +28,17 @@ from casmi.pool import ADDUCT_MASS, CandidatePool
 # MRR does not move when the analog channel is switched on.
 ANALOG_WEIGHT = 0.5
 
-TOP_ANALOGS = 50
-PPM = 5.0
+# Swept on a 200-molecule timsTOF holdout (scripts/validate_class2.py):
+#   5 ppm, no offset : 64 candidates, 100.0% recall, MRR 0.7121
+#   4 ppm, +0.98 ppm : 57 candidates, 100.0% recall, MRR 0.7163  <- chosen
+#   3 ppm, +0.98 ppm : 52 candidates,  99.5% recall, MRR 0.7165
+# 4 ppm keeps full recall while cutting candidates 11%; 3 ppm trades 0.5% of
+# recall for no measurable gain, so it is not worth the risk on unseen data.
+TOP_ANALOGS = 100   # 100 beat 50 by +0.012 on the calibrated metric
+PPM = 4.0
+# timsTOF reads +0.98 ppm high against the mass implied by the labelled
+# structure. Correcting it centres the search window instead of straddling.
+MZ_OFFSET_PPM = 0.98
 K = 25
 
 
@@ -37,10 +46,14 @@ class CombinedRanker:
     """Ranks pool candidates using both spectral channels."""
 
     def __init__(self, lib: Library, pool: CandidatePool,
-                 analog_weight: float = ANALOG_WEIGHT):
+                 analog_weight: float = ANALOG_WEIGHT,
+                 offset_ppm: float = MZ_OFFSET_PPM):
         self.lib = lib
         self.pool = pool
         self.analog_weight = analog_weight
+        # Held on the instance rather than threaded through every call: it is a
+        # property of the instrument, constant for a whole run.
+        self.offset_ppm = offset_ppm
 
         # The two channels live in different index spaces: identity scores are
         # per LIBRARY structure, candidates are per POOL row. InChIKey14 is the
@@ -63,7 +76,11 @@ class CombinedRanker:
         ~40x slower than identity and dominates the cost.
         """
         mz = spectra[0][0]
-        cand = self.pool.query(mz, adduct, ppm=ppm) if adduct in ADDUCT_MASS else np.empty(0, np.int64)
+        cand = (
+            self.pool.query(mz, adduct, ppm=ppm, offset_ppm=self.offset_ppm)
+            if adduct in ADDUCT_MASS
+            else np.empty(0, np.int64)
+        )
         empty = np.empty(0, dtype=np.float32)
         if len(cand) == 0:
             return cand, empty, empty
@@ -155,10 +172,10 @@ class CombinedRanker:
         These are appended AFTER the ranked candidates, so they can never
         displace a scored one.
         """
-        target = self.pool.neutral_mass(mz, adduct)
+        target = self.pool.neutral_mass(mz, adduct, self.offset_ppm)
         if target is None:
             return out, scores
-        wide = self.pool.query(mz, adduct, ppm=ppm * 20)
+        wide = self.pool.query(mz, adduct, ppm=ppm * 20, offset_ppm=self.offset_ppm)
         if len(wide) == 0:
             return out, scores
 

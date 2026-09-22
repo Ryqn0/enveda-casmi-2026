@@ -117,6 +117,10 @@ def main() -> None:
     ap.add_argument("-n", type=int, default=150)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--ppm", type=float, default=PPM)
+    ap.add_argument("--top-analogs", type=int, default=TOP_ANALOGS)
+    # Systematic calibration bias to remove. timsTOF (the test instrument)
+    # reads +0.98 ppm high; see CandidatePool.neutral_mass.
+    ap.add_argument("--offset-ppm", type=float, default=0.0)
     ap.add_argument("--source", default=None,
                     help="comma-separated ingest_lib values, e.g. gnps,massbank,mona,riken")
     args = ap.parse_args()
@@ -152,7 +156,7 @@ def main() -> None:
         mz, adduct, _ = queries[0]
         if adduct not in ADDUCT_MASS:
             continue
-        cand = pool.query(mz, adduct, ppm=args.ppm)
+        cand = pool.query(mz, adduct, ppm=args.ppm, offset_ppm=args.offset_ppm)
         if len(cand) == 0:
             continue
         cand_keys = pool.key[cand]
@@ -164,10 +168,10 @@ def main() -> None:
         # structure's best score.
         best = np.zeros(lib.n_structures, dtype=np.float32)
         for q_mz, _, peaks in queries:
-            idx, sc = lib.analog_structures(q_mz, peaks, top_n=TOP_ANALOGS,
+            idx, sc = lib.analog_structures(q_mz, peaks, top_n=args.top_analogs,
                                             exclude=exclude)
             np.maximum.at(best, idx, sc)
-        a_idx = np.argpartition(-best, TOP_ANALOGS - 1)[:TOP_ANALOGS]
+        a_idx = np.argpartition(-best, args.top_analogs - 1)[:args.top_analogs]
         a_idx = a_idx[np.argsort(-best[a_idx])]
 
         # How chemically close is the best analog we found to the true answer?

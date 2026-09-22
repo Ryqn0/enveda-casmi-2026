@@ -166,19 +166,46 @@ class CandidatePool:
     def __len__(self) -> int:
         return len(self.df)
 
-    def neutral_mass(self, precursor_mz: float, adduct: str) -> float | None:
-        """Undo the adduct: measured ion m/z -> mass of the neutral molecule."""
-        offset = ADDUCT_MASS.get(adduct)
-        return None if offset is None else precursor_mz - offset
+    def neutral_mass(
+        self, precursor_mz: float, adduct: str, offset_ppm: float = 0.0
+    ) -> float | None:
+        """Undo the adduct: measured ion m/z -> mass of the neutral molecule.
 
-    def query(self, precursor_mz: float, adduct: str, ppm: float = 10.0) -> np.ndarray:
+        `offset_ppm` removes a known systematic calibration bias. Measured from
+        train.parquet's `precursor_error_ppm`, every source library reads HIGH
+        against the mass implied by its own labelled structure:
+
+            enveda-180 (timsTOF)  +0.98 ppm   <- the test instrument
+            gnps       (Orbitrap) +1.55 ppm
+            massbank   (QTOF)     +1.87 ppm
+            riken      (QTOF)     +3.29 ppm
+
+        This is not noise, it is calibration. Correcting it lets the search
+        window be CENTRED on the truth rather than straddling it, so a narrower
+        window keeps the same recall — and a narrower window means fewer
+        candidates competing for 25 slots.
+        """
+        add = ADDUCT_MASS.get(adduct)
+        if add is None:
+            return None
+        m = precursor_mz - add
+        # The measurement is high by offset_ppm, so divide it back down.
+        return m / (1.0 + offset_ppm * 1e-6)
+
+    def query(
+        self,
+        precursor_mz: float,
+        adduct: str,
+        ppm: float = 10.0,
+        offset_ppm: float = 0.0,
+    ) -> np.ndarray:
         """Pool positions whose mass matches this measurement within `ppm`.
 
         Tolerance is in parts-per-million, not Daltons, because instrument mass
         error scales with mass: 5 ppm is 0.0017 Da at m/z 350 but 0.005 Da at
         m/z 1000.
         """
-        m = self.neutral_mass(precursor_mz, adduct)
+        m = self.neutral_mass(precursor_mz, adduct, offset_ppm)
         if m is None or m <= 0:
             return np.empty(0, dtype=np.int64)
         tol = m * ppm * 1e-6

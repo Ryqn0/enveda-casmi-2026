@@ -34,3 +34,6 @@ data/wheels/
 # COCONUT dump (re-download with the URL in docs/04-phase2-plan.md)
 data/coconut/
 data/pool.parquet
+
+# fpnet training data + checkpoints (HF Hub is the home for weights)
+data/fpnet/
