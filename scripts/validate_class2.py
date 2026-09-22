@@ -83,10 +83,16 @@ def sample_structures(lib: Library, pool: CandidatePool, n: int, seed: int,
 
 
 def fetch_raw(row_ids: set[int]) -> dict:
-    """Pull raw peaks plus precursor and adduct for the given train rows."""
+    """Pull raw peaks plus precursor, adduct and instrument for given train rows.
+
+    instrument_type is returned because FPNet takes it as an input: telling the
+    model a QTOF spectrum came from a timsTOF makes it score badly for a reason
+    unrelated to its quality.
+    """
     out = {}
     pf = pq.ParquetFile(RAW / "train.parquet")
-    cols = ["precursor_mz", "adduct", "ms2_mzs", "ms2_normalized_intensities"]
+    cols = ["precursor_mz", "adduct", "ms2_mzs", "ms2_normalized_intensities",
+            "instrument_type"]
     offset = 0
     for batch in pf.iter_batches(batch_size=50_000, columns=cols):
         n = batch.num_rows
@@ -105,6 +111,7 @@ def fetch_raw(row_ids: set[int]) -> dict:
                         ],
                         axis=1,
                     ),
+                    row.instrument_type,
                 )
         offset += n
         if len(out) == len(row_ids):
@@ -153,7 +160,7 @@ def main() -> None:
 
         # Candidates of the right neutral mass, from the first spectrum's
         # precursor and adduct (all spectra of a molecule agree on these).
-        mz, adduct, _ = queries[0]
+        mz, adduct, _, _ = queries[0]
         if adduct not in ADDUCT_MASS:
             continue
         cand = pool.query(mz, adduct, ppm=args.ppm, offset_ppm=args.offset_ppm)
@@ -167,7 +174,7 @@ def main() -> None:
         # Fuse analog evidence across the molecule's spectra, keeping each
         # structure's best score.
         best = np.zeros(lib.n_structures, dtype=np.float32)
-        for q_mz, _, peaks in queries:
+        for q_mz, _, peaks, _ in queries:
             idx, sc = lib.analog_structures(q_mz, peaks, top_n=args.top_analogs,
                                             exclude=exclude)
             np.maximum.at(best, idx, sc)
