@@ -26,3 +26,7 @@ kaggle.json
 
 # generated submissions (scores are logged in docs/ instead)
 submissions/
+
+# staged kaggle dataset + downloaded wheels (regenerate with scripts/package_kaggle.py)
+data/kaggle_deps/
+data/wheels/

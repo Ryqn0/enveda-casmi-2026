@@ -1,0 +1,18 @@
+{
+  "id": "ryqn00/casmi-library-baseline",
+  "title": "CASMI Library Baseline",
+  "code_file": "casmi-library-baseline.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": true,
+  "enable_gpu": false,
+  "enable_tpu": false,
+  "enable_internet": false,
+  "dataset_sources": [
+    "ryqn00/casmi26-deps"
+  ],
+  "competition_sources": [
+    "enveda-CASMI26-molecule-id-mass-spectra"
+  ],
+  "kernel_sources": []
+}
