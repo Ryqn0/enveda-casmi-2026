@@ -14,6 +14,7 @@ dependencies = [
     "kaggle",
     "ms-entropy>=1.5.2",
     "torch>=2.14.0",
+    "scikit-learn>=1.9.1",
 ]
 
 [project.optional-dependencies]
