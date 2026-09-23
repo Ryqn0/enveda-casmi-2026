@@ -87,11 +87,17 @@ class FPNet(nn.Module):
     """Predicts fingerprint-bit logits from a spectrum plus its metadata."""
 
     def __init__(self, n_bits: int, n_adducts: int, n_instruments: int = 4,
-                 d: int = 256, layers: int = 4, heads: int = 8, drop: float = 0.1):
+                 d: int = 256, layers: int = 4, heads: int = 8, drop: float = 0.1,
+                 extra_feats: bool = True):
         super().__init__()
+        # extra_feats is IN the cfg so the architecture is self-describing.
+        # v2 was trained before the engineered features existed; without this
+        # its checkpoint cannot be loaded at all, and a checkpoint you cannot
+        # load is a comparison you cannot run.
         self.cfg = dict(n_bits=n_bits, n_adducts=n_adducts,
                         n_instruments=n_instruments, d=d, layers=layers,
-                        heads=heads, drop=drop)
+                        heads=heads, drop=drop, extra_feats=extra_feats)
+        self.extra_feats = extra_feats
 
         self.mz_emb = SinEmb(d)
         # Neutral loss = precursor - fragment. The SAME chemical group falling
@@ -99,7 +105,9 @@ class FPNet(nn.Module):
         # same neutral loss, so this view is translation-invariant and exposes
         # structure the raw m/z hides.
         self.nl_emb = SinEmb(d)
-        self.peak = nn.Linear(2 * d + 1, d)   # +1 for intensity
+        # 2*d for the two sinusoidal embeddings, +3 for the scalar features:
+        # raw intensity, log intensity, and fractional position in the molecule.
+        self.peak = nn.Linear(2 * d + (3 if extra_feats else 1), d)
 
         self.prec_emb = SinEmb(d)
         self.adduct = nn.Embedding(n_adducts, d)
@@ -119,8 +127,23 @@ class FPNet(nn.Module):
         # Neutral losses, floored at 0 — a fragment heavier than its precursor
         # is noise, and a negative loss has no physical meaning.
         nl = (prec[:, None] - mz).clamp(min=0)
-        p = self.peak(torch.cat([self.mz_emb(mz), self.nl_emb(nl),
-                                 inten.unsqueeze(-1)], dim=-1))
+
+        # --- engineered scalar features -------------------------------------
+        # 1. log intensity. Peak heights span orders of magnitude and are
+        #    heavily skewed toward near-zero noise, so on a linear scale almost
+        #    every peak looks identical to the network. log1p spreads the low
+        #    end out where most of the peaks actually are.
+        log_int = torch.log1p(inten * 1000.0) / 7.0     # ~[0, 1]
+        # 2. fractional position in the molecule, mz / precursor in [0, 1].
+        #    Absolute mass is already encoded, but this says whether a fragment
+        #    is a small piece or nearly the whole molecule — a scale-invariant
+        #    view that transfers across molecules of different size.
+        rel_mz = (mz / prec[:, None].clamp(min=1.0)).clamp(0, 1)
+
+        feats = [self.mz_emb(mz), self.nl_emb(nl), inten.unsqueeze(-1)]
+        if self.extra_feats:
+            feats += [log_int.unsqueeze(-1), rel_mz.unsqueeze(-1)]
+        p = self.peak(torch.cat(feats, dim=-1))
 
         # One global token carrying everything that is true of the whole
         # measurement rather than of any single peak.
@@ -143,7 +166,8 @@ class FPNet(nn.Module):
         return self.head(torch.cat([mean, mx], dim=-1))
 
 
-def score_candidates(logits: np.ndarray, cand_fp: np.ndarray) -> np.ndarray:
+def score_candidates(logits: np.ndarray, cand_fp: np.ndarray,
+                     platt: tuple | None = None) -> np.ndarray:
     """Rank candidates by the log-likelihood of their fingerprint.
 
     `logits` is the model's output for one spectrum, `cand_fp` is (n_cand,
@@ -156,7 +180,16 @@ def score_candidates(logits: np.ndarray, cand_fp: np.ndarray) -> np.ndarray:
     bits set would win by having more chances to agree; this also penalises
     bits the model expects and the candidate lacks.
     """
-    p = 1.0 / (1.0 + np.exp(-logits.astype(np.float64)))
+    z = logits.astype(np.float64)
+    if platt is not None:
+        # Per-bit Platt calibration (scripts/calibrate_fpnet.py). Without it the
+        # "probabilities" below are not probabilities: pos_weight biases the
+        # model toward predicting 1s (precision 0.21 vs recall 0.76), so every
+        # bit is over-stated, and by a different amount per bit. Ranking by a
+        # likelihood built from miscalibrated terms weights the evidence wrong.
+        a, b = platt
+        z = a.astype(np.float64) * z + b.astype(np.float64)
+    p = 1.0 / (1.0 + np.exp(-z))
     eps = 1e-6
     lp, lq = np.log(p + eps), np.log1p(-p + eps)
     return cand_fp @ lp + (1 - cand_fp) @ lq
@@ -253,13 +286,33 @@ def save(model: FPNet, path, **extra) -> None:
 
 def load(path, device="cpu") -> tuple[FPNet, dict]:
     ck = torch.load(path, map_location=device, weights_only=False)
-    model = FPNet(**ck["cfg"]).to(device)
+    cfg = dict(ck["cfg"])
+    # Checkpoints saved before extra_feats existed have no such key. Infer it
+    # from the layer that actually changed size rather than guessing.
+    if "extra_feats" not in cfg:
+        cfg["extra_feats"] = ck["state"]["peak.weight"].shape[1] > 2 * cfg["d"] + 1
+    model = FPNet(**cfg).to(device)
     model.load_state_dict(ck["state"])
     model.eval()
     return model, ck
 
 
 def _self_check() -> None:
+    # Platt calibration with A=1, B=0 is the identity, so it must reproduce
+    # uncalibrated scoring exactly. Catches a transposed or misaligned A/B.
+    rng = np.random.default_rng(0)
+    lg = rng.normal(size=32).astype(np.float32)
+    fpc = (rng.random((5, 32)) > 0.5).astype(np.float32)
+    ident = (np.ones(32, np.float32), np.zeros(32, np.float32))
+    assert np.allclose(score_candidates(lg, fpc),
+                       score_candidates(lg, fpc, platt=ident)), \
+        "identity Platt changed the scores"
+    # And a real calibration must change them, or it is not being applied.
+    shift = (np.full(32, 0.5, np.float32), np.full(32, -1.0, np.float32))
+    assert not np.allclose(score_candidates(lg, fpc),
+                           score_candidates(lg, fpc, platt=shift)), \
+        "platt argument was ignored"
+
     torch.manual_seed(0)
     B, N, BITS = 3, 16, 64
     # eval(), not train(): dropout is stochastic, so the invariance checks below

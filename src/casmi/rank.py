@@ -1,18 +1,21 @@
-"""Combine identity search (class 1) and analog propagation (class 2).
+"""Rank a molecule's candidates by combining three evidence channels.
 
-The two channels answer different questions and are strong in different places:
+  analog    does the spectrum resemble a library spectrum of something
+            structurally similar? (hybrid search + Tanimoto propagation)
+  fpnet     do the candidate's substructures match what the model predicts
+            from the peaks?
+  fragment  can the candidate's own bond breaks explain the observed peaks?
+            (needs no library at all -- the only channel for class 3)
 
-  identity  "is this exact molecule in the spectral library?"  -> class 1
-  analog    "does it resemble something in the library?"       -> class 2
+By default the channels are combined by a fixed blend of z-scores,
+`fpnet + FPNET_ANALOG_WEIGHT * analog + FRAG_WEIGHT * fragment`, with the
+fragment weight currently 0 (no measurable gain on natural products). A small
+learned ranker (casmi/ranker.py) can replace the blend, but is not used: on
+natural products it did not beat the blend (docs/12).
 
-Both produce a score per candidate, but not on the same footing. A correct
-identity match sits near 1.0 and everything else near 0, so the channel is
-almost binary. Analog scores are soft and rarely exceed ~0.5, because they are
-`hybrid_similarity**4 * Tanimoto` and both factors are below 1.
-
-Adding them with a weight below 1 keeps that asymmetry honest: a confident
-identity match always wins, and analog ordering decides everything identity
-leaves at zero — which is ~85% of the test set.
+Identity search (exact library match) is still computed by score_components
+for analysis, but not used for ranking: hybrid search subsumes it, since a
+zero-mass-shift hybrid match IS an identity match.
 """
 
 from __future__ import annotations
@@ -21,26 +24,33 @@ import numpy as np
 
 from casmi.analog import rank_by_analogy
 from casmi.fpnet import candidate_bits, predict_logits, score_candidates
+from casmi.fragment import score_spectra_frag
+from casmi.ranker import ranker_features, score_with_ranker
 from casmi.library import Library
 from casmi.pool import ADDUCT_MASS, CandidatePool
 
-# How much the analog channel counts once the fingerprint model is in play.
+# Blend weights, measured on the NATURAL-PRODUCT holdout (docs/12): 984
+# molecules in COCONUT that fpnet v4c never trained on, from the reference
+# libraries, ties broken fairly. This is the only holdout found so far that
+# reproduces the leaderboard's ordering of past submissions; the earlier
+# "timsTOF holdout" was 99.9% enveda-180, a synthetic screening library, and
+# ranked them backwards.
 #
-# 0.5, chosen on the timsTOF holdout — the TEST INSTRUMENT. The previous value
-# of 0.25 came from a natural-product holdout on the wrong instrument, and it
-# is the one weight that loses to analog alone on timsTOF (0.7510 vs 0.7817).
-# That mistake is what took the leaderboard from 0.240 to 0.196.
+#   fpnet v4c +              MRR
+#   0.00*analog only      0.5628   (analog alone)
+#   0.50*analog           0.5865   <- chosen: the LB-best weight (0.244)
+#   0.75*analog           0.5919
+#   1.00*analog           0.5897
+#   1.50*analog           0.5853
 #
-#   timsTOF, model v2 (256 peaks)      all      hard
-#   analog alone                     0.7817    0.3006
-#   fpnet alone                      0.7905    0.5304
-#   fpnet + 0.25*analog              0.8289    0.5261
-#   fpnet + 0.50*analog              0.8287    0.5520   <- chosen
-#   fpnet + 1.00*analog              0.8162    0.4120
-#
-# 0.25 and 0.5 tie on the overall column; 0.5 wins the hard column, which is
-# the regime the real test set is mostly in.
+# 0.5-1.0 is a plateau (differences <= 0.006, within noise), so the weight is
+# held at the value the leaderboard already confirmed, and the next submission
+# changes ONE thing -- the model -- versus the 0.244 configuration.
 FPNET_ANALOG_WEIGHT = 0.5
+# In-silico fragmentation (casmi/fragment.py). Off: on natural products it adds
+# nothing measurable (+/- 0.001 at every weight tried), and it costs runtime.
+# It helped on enveda-180 only (docs/10), which is not the test chemistry.
+FRAG_WEIGHT = 0.0
 
 
 def _z(x: np.ndarray) -> np.ndarray:
@@ -73,13 +83,17 @@ class CombinedRanker:
     def __init__(self, lib: Library, pool: CandidatePool,
                  analog_weight: float = ANALOG_WEIGHT,
                  offset_ppm: float = MZ_OFFSET_PPM,
-                 fpnet=None, fpnet_ck=None, device: str = "cpu"):
+                 fpnet=None, fpnet_ck=None, device: str = "cpu",
+                 use_platt: bool = False, ranker=None, ranker_ck=None):
         self.lib = lib
         self.pool = pool
         self.analog_weight = analog_weight
         # Optional so the pipeline still runs without a trained model.
         self.fpnet = fpnet
         self.device = device
+        # Optional learned ranker (casmi/ranker.py). When absent, the fixed
+        # blend below is used -- which is also the fallback if it misbehaves.
+        self.ranker, self.ranker_ck = ranker, ranker_ck
         if fpnet is not None:
             self.bit_sel = np.asarray(fpnet_ck["bit_sel"])
             self.adducts = list(fpnet_ck["adduct_list"])
@@ -87,6 +101,19 @@ class CombinedRanker:
             # model silently truncates every rich spectrum, and 69.8% of test
             # spectra exceed 128 peaks.
             self.max_peaks = int(fpnet_ck.get("max_peaks", 128))
+            # Per-bit Platt calibration (CSI:FingerID / MSNovelist). The
+            # checkpoint CARRIES it but it is OFF by default, because measured
+            # on the timsTOF holdout it is a large loss:
+            #     v3 fpnet alone   raw 0.8147 | A-only 0.8095 | full 0.6409(v2)
+            #     v3 +0.25*analog  raw 0.8509 | A-only 0.8461
+            # It improves the probabilities a lot (log-loss 0.2187 -> 0.0732)
+            # and the RANKING not at all. Ranking reduces to cand_fp @ (A*z+B),
+            # so B ~ -3.2 acts as a -3.2 * (bits set) complexity penalty: a
+            # prior about molecules, not evidence from the spectrum.
+            # Better probabilities != better ranking. Left wired for the record.
+            a, b = fpnet_ck.get("platt_a"), fpnet_ck.get("platt_b")
+            self.platt = ((np.asarray(a), np.asarray(b))
+                          if use_platt and a is not None else None)
         # Held on the instance rather than threaded through every call: it is a
         # property of the instrument, constant for a whole run.
         self.offset_ppm = offset_ppm
@@ -104,8 +131,12 @@ class CombinedRanker:
         adduct: str,
         ppm: float = PPM,
         exclude: np.ndarray | None = None,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        """Return (pool positions, identity scores, analog scores).
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, float]:
+        """Return (pool positions, identity scores, analog scores, an_conf).
+
+        an_conf is the hybrid-search score of the single best spectral
+        relative: how much the analog channel deserves to be trusted for THIS
+        molecule. The learned ranker uses it; the fixed blend ignores it.
 
         Kept separate from `rank` so validation can sweep the blend weight
         without paying for the spectral searches again — the analog channel is
@@ -119,7 +150,7 @@ class CombinedRanker:
         )
         empty = np.empty(0, dtype=np.float32)
         if len(cand) == 0:
-            return cand, empty, empty
+            return cand, empty, empty, 0.0
 
         # --- channel 1: identity ------------------------------------------
         # Mean across the molecule's spectra, matching Phase 1.
@@ -151,7 +182,7 @@ class CombinedRanker:
         analog = rank_by_analogy(
             self.pool.smiles[cand], self.lib.smiles[a_idx], best[a_idx]
         )
-        return cand, ident, analog
+        return cand, ident, analog, float(best[a_idx[0]])
 
     def rank(
         self,
@@ -190,22 +221,15 @@ class CombinedRanker:
         `self.analog_weight` is retained so score_components can be re-tested if
         a future channel changes the balance, but it no longer affects ranking.
         """
-        cand, ident, analog = self.score_components(spectra, adduct, ppm, exclude)
+        cand, ident, analog, an_conf = self.score_components(
+            spectra, adduct, ppm, exclude)
         if len(cand) == 0:
             return cand, np.empty(0, dtype=np.float32)
 
         if self.fpnet is None:
             total = analog
         else:
-            # Swept on 290 natural-product structures, read on the hard bucket
-            # (best analog Tanimoto < 0.4) because that is the regime the real
-            # test set is mostly in:
-            #   analog alone          0.6427 all / 0.4246 hard
-            #   fpnet alone           0.6946      / 0.6307
-            #   fpnet + 0.25*analog   0.7424      / 0.6567   <- chosen
-            #   fpnet + 1.00*analog   0.7105      / 0.5489
-            # A small analog weight adds real evidence; an equal one drowns the
-            # model exactly where the model is the only thing that works.
+            # Weights and the measurements behind them: see FPNET_ANALOG_WEIGHT.
             logits = predict_logits(
                 self.fpnet, spectra, adduct, self.adducts,
                 instrument_id_=0,   # the test set is 100% timsTOF
@@ -214,9 +238,23 @@ class CombinedRanker:
                 collision_energies=collision_energies,
             )
             fp_score = score_candidates(
-                logits, candidate_bits(self.pool.smiles[cand], self.bit_sel)
+                logits, candidate_bits(self.pool.smiles[cand], self.bit_sel),
+                platt=self.platt,
             )
-            total = _z(fp_score) + FPNET_ANALOG_WEIGHT * _z(analog)
+            # Fragmentation is the slowest channel; skip it when nothing uses it.
+            needs_frag = self.ranker is not None or FRAG_WEIGHT != 0
+            frag = (score_spectra_frag(self.pool.smiles[cand], spectra, adduct)
+                    if needs_frag else np.zeros(len(cand), dtype=np.float32))
+            if self.ranker is not None:
+                # Same function, same inputs as the training dump -- n_peaks is
+                # the RAW peak count of the richest spectrum, as in validation.
+                feats = ranker_features(
+                    fp_score, analog, frag, an_conf,
+                    n_peaks=max(len(pk) for _, pk in spectra))
+                total = score_with_ranker(self.ranker, self.ranker_ck, feats)
+            else:
+                total = (_z(fp_score) + FPNET_ANALOG_WEIGHT * _z(analog)
+                         + FRAG_WEIGHT * _z(frag))
 
         n = min(k, len(cand))
         top = np.argpartition(-total, n - 1)[:n]

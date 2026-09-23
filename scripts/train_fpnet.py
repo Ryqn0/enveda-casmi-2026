@@ -32,7 +32,12 @@ class SpectraSet(Dataset):
         self.mz, self.inten, self.npk = d["mz"][idx], d["inten"][idx], d["npk"][idx]
         self.prec, self.ce = d["prec"][idx], d["ce"][idx]
         self.add_id, self.ins_id = d["add_id"][idx], d["ins_id"][idx]
-        self.y = fp[d["y_row"][idx]]
+        # Store the INDEX into the fingerprint table, not a copy of the row.
+        # `fp[y_row[idx]]` materialised one 1,583-float row per spectrum:
+        # 896k x 1583 x 4 bytes = 5.7 GB for labels alone, which is what made
+        # training hold 11 GB and blocked every validation run alongside it.
+        # Many spectra share a structure, so the table is far smaller.
+        self.fp, self.y_row = fp, d["y_row"][idx]
 
     def __len__(self):
         return len(self.npk)
@@ -41,7 +46,8 @@ class SpectraSet(Dataset):
         # Return only the REAL peaks; the collator decides the padded width.
         n = int(self.npk[i])
         return (self.mz[i][:n], self.inten[i][:n], self.prec[i],
-                int(self.add_id[i]), int(self.ins_id[i]), self.ce[i], self.y[i])
+                int(self.add_id[i]), int(self.ins_id[i]), self.ce[i],
+                self.fp[self.y_row[i]])
 
 
 class SortishBatches(torch.utils.data.Sampler):
@@ -146,7 +152,9 @@ def main() -> None:
     dev = "cuda" if torch.cuda.is_available() else "cpu"
     d = np.load(DATA / "train.npz", allow_pickle=True)
     n_bits = int(d["n_bits"])
-    fp = np.unpackbits(d["fp"], axis=1)[:, :n_bits].astype(np.float32)
+    # uint8, not float32: 4x smaller, and collate() casts each batch's labels
+    # to float32 anyway, which is the only place the float type is needed.
+    fp = np.unpackbits(d["fp"], axis=1)[:, :n_bits]
     y_row = d["y_row"]
     print(f"{len(y_row):,} spectra | {fp.shape[0]:,} structures | {n_bits} bits | {dev}")
 
@@ -160,6 +168,21 @@ def main() -> None:
     print(f"train {len(tr_idx):,} spectra / {len(structs) - len(val_structs):,} structures")
     print(f"val   {len(va_idx):,} spectra / {len(val_structs):,} structures")
     assert not (set(y_row[tr_idx]) & set(y_row[va_idx])), "structure leaked across split"
+
+    # Everything the checkpoint records, computed ONCE, here.
+    #
+    # `d` is a lazy NpzFile: every d["key"] access re-reads and decompresses
+    # that array from the zip. The first version of train_keys indexed
+    # d["keys"] inside a list comprehension, so it unpickled all 269k keys
+    # 255k times -- quadratic, hours per checkpoint save, GPU idle at 1%
+    # throughout. Read each array once into a plain variable.
+    keys = d["keys"]
+    train_keys = np.array([keys[r] for r in structs if r not in val_structs],
+                          dtype=object)
+    ck_meta = dict(n_bits=n_bits, bit_sel=d["bit_sel"],
+                   adduct_list=d["adduct_list"],
+                   max_peaks=int(d["mz"].shape[1]), train_keys=train_keys)
+    print(f"checkpoint will record {len(train_keys):,} training structures")
 
     tr_set = SpectraSet(d, tr_idx, fp)
     tr = DataLoader(tr_set,
@@ -219,9 +242,11 @@ def main() -> None:
             # max_peaks travels WITH the weights. Without it, inference has to
             # guess the cap the model was trained at, and guessing 128 for a
             # 256-peak model silently truncates every rich spectrum.
-            save(model, args.out, n_bits=n_bits, bit_sel=d["bit_sel"],
-                 adduct_list=d["adduct_list"], val_loss=vl, val_f1=f1,
-                 max_peaks=int(d["mz"].shape[1]), epoch=ep)
+            # train_keys (in ck_meta) is the set of structures this model
+            # trained on, so a later holdout can exclude them without
+            # re-deriving the split from a train.npz that may since have been
+            # regenerated with different sampling (docs/09).
+            save(model, args.out, val_loss=vl, val_f1=f1, epoch=ep, **ck_meta)
 
     print(f"best val loss {best:.4f} -> {args.out}")
 

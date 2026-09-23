@@ -62,12 +62,32 @@ def build_dataset() -> None:
         raise SystemExit("data/pool.parquet missing — run scripts/build_pool.py")
     shutil.copy2(pool, STAGE / "pool.parquet")
 
-    # Trained fingerprint model. torch is already in the Kaggle base image, so
-    # only the weights need shipping.
-    ckpt = ROOT / "data" / "fpnet" / "fpnet.pt"
-    if not ckpt.exists():
-        raise SystemExit("data/fpnet/fpnet.pt missing — run scripts/train_fpnet.py")
-    shutil.copy2(ckpt, STAGE / "fpnet.pt")
+    # Trained fingerprint model and the learned ranker trained on ITS scores.
+    # torch is already in the Kaggle base image, so only weights ship. They are
+    # renamed to fixed names so the notebook never needs to know versions.
+    import re
+    import torch
+    fp_ck_path = ROOT / "data/fpnet/fpnet_v4c.pt"
+    rk_ck_path = ROOT / "data/ranker_v4c.pt"
+    for f in (fp_ck_path, rk_ck_path):
+        if not f.exists():
+            raise SystemExit(f"{f} missing")
+    fp_tag = torch.load(fp_ck_path, map_location="cpu",
+                        weights_only=False).get("model_tag")
+    rk_tag = torch.load(rk_ck_path, map_location="cpu",
+                        weights_only=False).get("fpnet_tag")
+    nb_tag = re.search(r'EXPECTED_FPNET_TAG = "([^"]+)"',
+                       (ROOT / "kaggle" / "submit_notebook.py").read_text())
+    # Three things must agree, and each disagreement is a different mistake:
+    # ranker vs fpnet -> ranker served another model's scores (skew);
+    # fpnet vs notebook -> the notebook would reject its own dataset.
+    # Checked HERE, in seconds, instead of 25 minutes into a Kaggle run.
+    assert fp_tag and rk_tag == fp_tag, f"ranker built for {rk_tag}, fpnet is {fp_tag}"
+    assert nb_tag and nb_tag.group(1) == fp_tag, (
+        f"notebook expects {nb_tag and nb_tag.group(1)}, shipping {fp_tag}")
+    shutil.copy2(fp_ck_path, STAGE / "fpnet.pt")
+    shutil.copy2(rk_ck_path, STAGE / "ranker.pt")
+    print(f"shipping fpnet {fp_tag} + ranker built for it")
 
     (STAGE / "dataset-metadata.json").write_text(
         json.dumps(

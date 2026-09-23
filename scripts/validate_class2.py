@@ -36,8 +36,34 @@ PPM = 5.0
 K = 25
 
 
+def fpnet_unseen_keys(val_frac: float = 0.05, seed: int = 0) -> set:
+    """InChIKey14s that fpnet NEVER saw in training.
+
+    Reproduces train_fpnet.py's structure-level split exactly (same seed, same
+    fraction) and returns only the held-out side.
+
+    This exists because the default holdout was a rigged comparison. 80.3% of
+    the structures it sampled were in fpnet's TRAINING split, so fpnet was
+    scored on molecules it had memorised. The analog channel cannot cheat that
+    way -- it excludes the query's own spectra at search time -- so fpnet
+    looked far stronger than it is, and the blend weight got tuned to trust it.
+    That is why the holdout recommended 0.25 twice while the leaderboard
+    disagreed twice: 0.196 and 0.228, against 0.244 at weight 0.5.
+    """
+    d = np.load(ROOT / "data" / "fpnet" / "train.npz", allow_pickle=True)
+    keys = np.array(d["keys"], dtype=object)
+    y_row = d["y_row"]
+    rng = np.random.default_rng(seed)
+    structs = np.unique(y_row)
+    val_rows = rng.choice(structs, int(len(structs) * val_frac), replace=False)
+    return {keys[r] for r in val_rows}
+
+
 def sample_structures(lib: Library, pool: CandidatePool, n: int, seed: int,
-                      sources: set[str] | None = None):
+                      sources: set[str] | None = None,
+                      unseen_only: bool = False,
+                      seen_keys: set | None = None,
+                      coconut_only: bool = False):
     """Pick structures present in the candidate pool, optionally by source library.
 
     Default is timsTOF, matching the test instrument. But in this dataset only
@@ -61,6 +87,27 @@ def sample_structures(lib: Library, pool: CandidatePool, n: int, seed: int,
 
     in_pool = set(pool.key)
     keys = lib.structures.inchikey14.to_numpy()
+    if seen_keys is not None:
+        # Preferred path: the model(s) told us what they trained on, so the
+        # exclusion cannot drift when train.npz is regenerated. Pass the UNION
+        # of every model being compared, or the comparison is not like-for-like.
+        in_pool = in_pool - seen_keys
+        print(f"excluded {len(seen_keys):,} seen structures -> "
+              f"{len(in_pool):,} eligible keys")
+    elif unseen_only:
+        # Fallback for checkpoints predating train_keys: re-derive the split.
+        # Only valid while train.npz is still the one the model trained on.
+        in_pool = in_pool & fpnet_unseen_keys()
+        print(f"restricted to structures unseen by fpnet: {len(in_pool):,} keys")
+    if coconut_only:
+        # Natural-product chemistry only. The timsTOF training data is 99.9%
+        # enveda-180, a synthetic screening library that is 0.0% in COCONUT,
+        # while enveda-np-examples -- the test-like set -- is 99.6% in it. A
+        # holdout of the wrong chemistry ranked three leaderboard submissions
+        # exactly backwards (docs/12).
+        in_pool = in_pool & set(np.load(ROOT / "data" / "coconut_keys.npy",
+                                        allow_pickle=True).tolist())
+        print(f"restricted to COCONUT (natural product) structures")
     eligible = per_struct[[keys[s] in in_pool for s in per_struct.index]]
 
     # At least 2 spectra, and never take them all as queries. Class 2 hides

@@ -105,7 +105,7 @@ def main() -> None:
                 if mode == "class1"
                 else lib.spectra_of(s)
             )
-            cand, ident, analog = ranker.score_components(
+            cand, ident, analog, _ = ranker.score_components(
                 spectra, adduct, exclude=exclude
             )
             if len(cand) == 0:

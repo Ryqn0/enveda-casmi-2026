@@ -8,59 +8,57 @@ library code rather than a copy that could drift.
 """
 
 # %% [markdown]
-# # CASMI 2026 — analog propagation over a candidate pool
+# # CASMI 2026 — three evidence channels over a candidate pool
 #
 # **Goal:** given tandem mass spectra of an unknown molecule, output 25 candidate
-# structures as SMILES, best guess first.
-#
-# ## Why this version exists
-#
-# The previous submission scored **0.130** using spectral library search. That
-# approach can only return a structure that already has a reference spectrum,
-# and the score told us exactly how rare that is:
-#
-#     P(class 1) = LB / class-1 MRR = 0.130 / 0.845 = 15.4%
-#
-# So **~85% of the test set was unreachable**. This version targets it.
+# structures as SMILES, best guess first. Scored by MRR@25 on InChIKey
+# connectivity (the first 14 characters).
 #
 # ## The three difficulty classes
 #
-# | Class | Meaning | Reachable how |
+# | Class | Meaning | What can reach it |
 # |---|---|---|
-# | 1 | Public reference spectra exist | library search |
-# | 2 | Structure known (PubChem/COCONUT), no spectra | **candidate pool + analogy** |
-# | 3 | Structure unknown to chemistry | neither — in no database |
+# | 1 | Public reference spectra exist | library / analog search |
+# | 2 | Structure known (PubChem/COCONUT), no spectra | candidate pool + any channel |
+# | 3 | Structure unknown to chemistry | only channels needing no relative |
+#
+# Class 1 is ~15% of the test set, so ~85% of the score lives in classes 2-3.
 #
 # ## The method
 #
 # 1. **Candidate pool.** Subtract the adduct from the measured precursor to get
-#    the neutral mass, then take every structure of that mass from COCONUT plus
-#    the training set. ~34–70 candidates, and the answer is among them 95% of
-#    the time.
-# 2. **Find an analog.** `hybrid_search` matches spectra that differ by a
-#    *constant mass shift* — the signature of a chemical modification. Add a
-#    methyl group and every fragment containing it moves by the same 14 Da. This
-#    finds a known relative even when the molecule itself was never measured.
-# 3. **Rank by chemical resemblance.** Score each candidate by Tanimoto
-#    similarity to the analog, weighted by how well the analog matched.
+#    the neutral mass, then take every structure of that mass (within 4 ppm)
+#    from COCONUT plus the training set. For classes 1-2 the answer is in the
+#    pool essentially every time -- so **ranking, not retrieval, is the problem**.
+# 2. **Rank each candidate with three independent channels:**
+#    - **analog** -- `hybrid_search` finds library spectra that differ from the
+#      query by a constant mass shift (the signature of a chemical
+#      modification), then scores candidates by Tanimoto to those relatives.
+#    - **fpnet** -- a set transformer predicts which substructures the molecule
+#      contains; each candidate is scored by how well its fingerprint fits.
+#    - **fragment** -- break each candidate's bonds and measure how much of the
+#      observed peak intensity its own pieces explain. Needs no library at all.
+# 3. **Blend** the z-scored channels: `fpnet + 0.5 * analog`. The fragment
+#    channel and a learned ranker are included but switched off -- see Step 7.
 #
-# The unknown is never identified directly. It is located by triangulation from
-# a known neighbour.
+# ## Leaderboard history
 #
-# ## Measured on a 196-molecule natural-product holdout
+# | version | method | LB |
+# |---|---|---:|
+# | 1 | spectral library search | 0.130 |
+# | 2 | + candidate pool + analog propagation | 0.240 |
+# | 3 | + fingerprint model (buggy inputs, weight 0.25) | 0.196 |
+# | 3b | fixed inputs, weight 0.5 | 0.244 |
+# | 4 | engineered features, weight 0.25 | 0.228 |
+# | 5 | v4c model + fragmentation + learned ranker | 0.204 |
+# | 6 | **this notebook** -- v4c model, same blend as version 3b | ? |
 #
-# | strategy | class 1 | class 2 |
-# |---|---:|---:|
-# | identity only (previous submission) | 0.8765 | 0.0921 |
-# | linear blend w=4 | 0.8994 | 0.5320 |
-# | gated t=0.7 | 0.8986 | 0.5977 |
-# | **analog only (this notebook)** | 0.8955 | **0.6207** |
-#
-# Ranking is analog-only because **hybrid search subsumes identity search**: a
-# zero-mass-shift hybrid match *is* an identity match, with self-Tanimoto 1.0.
-# The identity channel adds nothing on class 1 and actively harms class 2, where
-# the true answer has no spectrum and scores 0 while wrong candidates that happen
-# to be in the library score above it.
+# Versions 3, 4 and 5 each looked better offline and scored worse. Two causes,
+# both in the VALIDATION, not the model: the holdout overlapped the model's
+# training data, and -- the bigger one -- it was built from a synthetic
+# screening library instead of natural products, which is what the test looks
+# like. Version 6 changes exactly one thing relative to the best submission so
+# far (3b, 0.244): the fingerprint model. Step 7 explains.
 
 # %% [markdown]
 # ## Step 1 — install dependencies offline
@@ -145,38 +143,91 @@ subprocess.run(
 # ## Step 5 — the fingerprint model
 #
 # A set transformer that reads peaks and predicts which substructures the
-# molecule contains. Unlike analogy it needs no relative in the library, which
-# is why it wins where analogy fails: on a 290-molecule natural-product
-# holdout, MRR 0.4246 -> 0.6307 on molecules whose nearest spectral cousin is
-# chemically distant.
+# molecule contains (1,583 Morgan fingerprint bits). Each candidate is then
+# scored by how well its own fingerprint fits that prediction.
 #
-# Trained locally on an RTX 4080: 800k spectra, 224,744 structures, 20 epochs,
-# 5.5M parameters. The weights ship in the deps dataset.
+# This checkpoint ("v4c") differs from earlier versions in two ways, each
+# measured on 600 molecules no model version ever saw:
+#
+# | change | MRR | paired gain |
+# |---|---:|---|
+# | v3: engineered peak features | 0.8554 | -- |
+# | v4: at most 4 spectra per structure | 0.8689 | +0.0135 +/- 0.0081 |
+# | v4c: + contrastive fine-tune | 0.8745 | +0.0056 +/- 0.0064 (likely, not proven) |
+#
+# - **Data diversity.** Sampling spectra uniformly let a few heavily-measured
+#   molecules (one had 1,438 spectra) dominate training, which taught
+#   memorisation. Capping at 4 per structure covers all 268,969 structures for
+#   the same compute.
+# - **Contrastive fine-tune.** Bit prediction is only indirectly the task. The
+#   real task is picking the right structure among ~60 same-mass isomers, so
+#   the model was fine-tuned on exactly that, with those isomers as negatives.
+#
+# 5.5M parameters, trained locally on an RTX 4080. Weights ship in the deps
+# dataset.
 
 # %%EMBED src/casmi/fpnet.py
 
 # %% [markdown]
-# ## Step 6 — the ranker
+# ## Step 6 — in-silico fragmentation
 #
-# Ties everything together: pool for candidates, the model for substructure
-# evidence, hybrid search for analogy.
+# Breaks each candidate's bonds and asks what fraction of the observed peak
+# intensity its own pieces can explain. The other two channels both need a
+# spectral relative in the library; this one needs nothing but the candidate
+# structure, so it is the only signal that still works for class-3 molecules
+# that exist in no database.
 #
-# The blend is `fpnet + 0.25*analog`, both z-scored. Swept on the hard bucket:
+# Weak on its own (MRR 0.41) but independent of the other two, which is what
+# makes it worth adding.
+
+# %%EMBED src/casmi/fragment.py
+
+# %% [markdown]
+# ## Step 6b — the learned ranker
 #
-# | strategy | all | hard |
+# Instead of one fixed weight per channel, a small neural network (~1.5k
+# parameters) scores each candidate from the three channel scores AND context
+# about the molecule -- how good its best spectral relative is, how many
+# candidates there are, how rich the spectrum is. That lets it learn rules a
+# fixed blend cannot express, like "ignore the analog channel when the best
+# analog is weak".
+#
+# **Not used in this version.** On a synthetic screening library it beat the
+# fixed blend by +0.052, but that library turned out not to resemble the test.
+# On natural products it is no better than the blend (+0.006 +/- 0.009), and
+# the version trained on the screening library collapsed class-1 accuracy from
+# 0.63 to 0.39 -- most of why version 5 scored 0.204. Kept here, switched off,
+# because the code is the record of what was tried.
+
+# %%EMBED src/casmi/ranker.py
+
+# %% [markdown]
+# ## Step 7 — the ranker
+#
+# Ties everything together: pool for candidates, then `fpnet + 0.5*analog`.
+#
+# **How to trust a holdout.** Four past submissions have leaderboard scores.
+# A holdout is only worth optimising against if it ranks them the same way.
+# Natural-product molecules the models never saw (COCONUT structures from the
+# public reference libraries) do; the earlier timsTOF holdout, which was 99.9%
+# a synthetic screening library, ranked them backwards:
+#
+# | submission | natural-product holdout | leaderboard |
 # |---|---:|---:|
-# | analog alone | 0.6427 | 0.4246 |
-# | fpnet alone | 0.6946 | 0.6307 |
-# | **fpnet + 0.25*analog** | **0.7424** | **0.6567** |
-# | fpnet + 1.0*analog | 0.7105 | 0.5489 |
+# | v2 + 0.5*analog | 0.535 | 0.244 |
+# | analog only | 0.524 | 0.240 |
+# | v4c + learned ranker | 0.510 | 0.204 |
+# | v3 + 0.25*analog | 0.495 | 0.228 |
 #
-# An equal weight drowns the model exactly where the model is the only thing
-# that works.
+# On that holdout, the analog weight is flat between 0.5 and 1.0 and fragments
+# add nothing, so this version keeps the leaderboard-confirmed 0.5 and changes
+# only the model: v4c + 0.5*analog scored 0.559 vs 0.535 for the 0.244
+# configuration (+0.024 +/- 0.043 -- promising, not proven).
 
 # %%EMBED src/casmi/rank.py
 
 # %% [markdown]
-# ## Step 7 — build the index
+# ## Step 8 — build the index
 #
 # ~7 minutes and ~10 GB on Kaggle's 4 vCPUs, against a 9-hour cap. Written to
 # `/tmp`, not `/kaggle/working`, because it exceeds 2 GB and `working/` is
@@ -228,7 +279,7 @@ build(TRAIN, INDEX, TEST_MZ_RANGE, set(TEST_ADDUCTS))
 print(f"index built in {time.time() - t0:.0f}s")
 
 # %% [markdown]
-# ## Step 8 — rank every test molecule
+# ## Step 9 — rank every test molecule
 #
 # A molecule may have been measured several times at different collision
 # energies. Scoring is per molecule, so `rank` fuses them, keeping each
@@ -256,7 +307,24 @@ assert fpnet_ck.get("max_peaks") == 256, (
     f"expected the 256-peak model, got max_peaks={fpnet_ck.get('max_peaks')}. "
     f"Kaggle has probably mounted an older version of casmi26-deps; re-push."
 )
+# max_peaks alone cannot tell one 256-peak model from another, and neither
+# can val_loss thresholds -- those broke the moment the validation set changed.
+# Every shipped checkpoint now carries a model_tag; check it exactly.
+EXPECTED_FPNET_TAG = "v4c"
+assert fpnet_ck.get("model_tag") == EXPECTED_FPNET_TAG, (
+    f"mounted fpnet is {fpnet_ck.get('model_tag')!r}, expected "
+    f"{EXPECTED_FPNET_TAG!r}. Kaggle mounted a stale casmi26-deps; re-push."
+)
+
+# Platt calibration is deliberately NOT used: it improves the probabilities
+# (log-loss 0.2187 -> 0.0732) and makes the RANKING worse (0.8509 -> 0.8461
+# A-only, 0.64 full). CombinedRanker defaults use_platt=False; assert it,
+# because the checkpoint does carry the coefficients.
+# No learned ranker: on natural products it did not beat the fixed blend, and
+# the one trained on enveda-180 collapsed class 1 (docs/12).
 ranker = CombinedRanker(lib, pool, fpnet=fpnet, fpnet_ck=fpnet_ck, device=DEV)
+assert ranker.ranker is None, "learned ranker should be OFF"
+assert getattr(ranker, "platt", None) is None, "Platt calibration is ON — it measured worse"
 
 test = pd.read_parquet(COMP / "test.parquet")
 print(f"test:    {len(test):,} spectra / {test.molecule_id.nunique():,} molecules")
@@ -315,7 +383,7 @@ print(f"  no mass-matched candidates: {no_cand} ({no_cand / len(sub):.1%})")
 print(f"  fewer than {K} candidates:  {short} ({short / len(sub):.1%})")
 
 # %% [markdown]
-# ## Step 9 — validate the submission contract
+# ## Step 10 — validate the submission contract
 #
 # The host rejects a file that repeats a `molecule_id`, contains nulls, or gives
 # more than 25 guesses. A rejection costs a submission slot and a day, so assert

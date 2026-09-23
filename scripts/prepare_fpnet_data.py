@@ -22,6 +22,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pyarrow.parquet as pq
 from rdkit import DataStructs, RDLogger
 
@@ -82,6 +83,20 @@ def instrument_id(s) -> int:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--n-spectra", type=int, default=600_000)
+    # Cap spectra per STRUCTURE instead of sampling uniformly over spectra.
+    #
+    # Uniform sampling is what taught the model to memorise. Spectra per
+    # structure are wildly skewed -- median 4, max 1,438 -- so a handful of
+    # heavily-measured molecules dominate the training set while the rare tail
+    # is crowded out. At 900k uniform we covered 221,792 of 268,969 available
+    # structures; at cap=4 we cover ALL of them for 943k spectra, i.e. the same
+    # compute buys 21% more distinct molecules.
+    #
+    # This matters because fpnet loses to analog search on molecules it has not
+    # seen (docs/09): its weakness is generalisation, and structure diversity is
+    # the lever that targets generalisation directly.
+    ap.add_argument("--cap-per-structure", type=int, default=0,
+                    help="0 = old uniform sampling")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
@@ -106,7 +121,18 @@ def main() -> None:
     print(f"{len(rows):,} eligible spectra ({time.time()-t0:.0f}s)")
 
     rng = np.random.default_rng(args.seed)
-    if len(rows) > args.n_spectra:
+    if args.cap_per_structure:
+        # Shuffle first so the kept spectra per structure are a random subset
+        # (not the first N by file order, which correlates with source library
+        # and therefore with instrument).
+        d = pd.DataFrame({"row": rows,
+                          "key": scal.inchikey14.to_numpy()[rows]})
+        d = d.sample(frac=1.0, random_state=args.seed)
+        rows = np.sort(d.groupby("key").head(args.cap_per_structure)
+                       .row.to_numpy())
+        print(f"capped at {args.cap_per_structure}/structure -> {len(rows):,} "
+              f"spectra over {d.key.nunique():,} structures")
+    elif len(rows) > args.n_spectra:
         rows = np.sort(rng.choice(rows, size=args.n_spectra, replace=False))
     keep = set(rows.tolist())
     print(f"sampling {len(rows):,}")
