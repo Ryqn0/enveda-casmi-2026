@@ -22,7 +22,7 @@ explains the *code*.
 | 8a | [08a-scripts-data-validation.md](08a-scripts-data-validation.md) | 0–2 | shared script patterns; building data; the first validators |
 | 8b | [08b-scripts-training-evaluation.md](08b-scripts-training-evaluation.md) | 3–5 | training the models; the holdouts and comparisons that judged them |
 | 8c | [08c-scripts-kaggle-deploy.md](08c-scripts-kaggle-deploy.md) | 4–6 | packaging for Kaggle, the notebook, the public engine, deployment |
-| 9 | [09-web.md](09-web.md) | wrap-up | the in-browser demo: `core.js`, `index.html`, golden test |
+| 9 | [09-web.md](09-web.md) | wrap-up | the demos: ONNX export, `core.js`, `index.html`, golden test, `app/app.py` |
 
 ## How the modules depend on each other
 
