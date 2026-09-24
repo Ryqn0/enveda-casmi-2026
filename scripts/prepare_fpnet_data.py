@@ -18,6 +18,7 @@ WHAT THE MODEL LEARNS
 from __future__ import annotations
 
 import argparse
+import json
 import time
 from pathlib import Path
 
@@ -98,8 +99,13 @@ def main() -> None:
     ap.add_argument("--cap-per-structure", type=int, default=0,
                     help="0 = old uniform sampling")
     ap.add_argument("--seed", type=int, default=0)
+    # Structures the model must never see: a JSON list of InChIKey14s. Used
+    # to hold out the molecules a downstream ranker is trained and evaluated
+    # on, so its fingerprint features are as honest as on the real test.
+    ap.add_argument("--exclude-keys", type=Path, default=None)
+    ap.add_argument("--out", type=Path, default=OUT / "train.npz")
     args = ap.parse_args()
-    OUT.mkdir(parents=True, exist_ok=True)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
 
     lo, hi = TEST_MZ_RANGE
     cols = ["inchikey14", "normalized_smiles", "adduct", "instrument_type",
@@ -117,6 +123,10 @@ def main() -> None:
         & scal.adduct.isin(TEST_ADDUCTS)
         & scal.normalized_smiles.notna()
     )
+    if args.exclude_keys:
+        held = set(json.loads(args.exclude_keys.read_text()))
+        ok &= ~scal.inchikey14.isin(held)
+        print(f"excluding {len(held):,} held-out structures")
     rows = np.flatnonzero(ok.to_numpy())
     print(f"{len(rows):,} eligible spectra ({time.time()-t0:.0f}s)")
 
@@ -210,14 +220,14 @@ def main() -> None:
     print(f"wrote {w:,} spectra in {time.time()-t0:.0f}s")
     sl = slice(0, w)
     np.savez_compressed(
-        OUT / "train.npz",
+        args.out,
         mz=mz[sl], inten=inten[sl], npk=npk[sl], prec=prec[sl],
         add_id=add_id[sl], ins_id=ins_id[sl], ce=ce[sl], y_row=y_row[sl],
         fp=np.packbits(fp_sel, axis=1), n_bits=len(sel), bit_sel=sel,
         keys=np.array(keys, dtype=object),
         adduct_list=np.array(ADDUCT_LIST, dtype=object),
     )
-    print(f"-> {OUT / 'train.npz'}")
+    print(f"-> {args.out}")
 
 
 if __name__ == "__main__":

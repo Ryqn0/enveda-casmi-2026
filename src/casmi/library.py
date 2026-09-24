@@ -333,6 +333,39 @@ class Library:
         np.maximum.at(out, self.struct_idx, per_spectrum)
         return out
 
+    def hybrid_scores(
+        self,
+        precursor_mz: float,
+        peaks: np.ndarray,
+        exclude: np.ndarray | None = None,
+    ) -> np.ndarray | None:
+        """Best hybrid-search score of EVERY structure (length n_structures).
+
+        None when the query cleans away to nothing. analog_structures keeps the
+        top few of these as cousins; the learned ranker also reads a
+        candidate's OWN entry: its library spectra matched with a precursor
+        shift, i.e. the same molecule measured as a different adduct -- which
+        identity search (precursor must match) cannot see.
+        """
+        cleaned = self.fes.clean_spectrum_for_search(
+            precursor_mz=precursor_mz, peaks=peaks, noise_threshold=NOISE_THRESHOLD
+        )
+        if len(cleaned) == 0:
+            return None
+
+        # No ms1_tolerance argument here: allowing the precursor to differ is
+        # the entire point of a hybrid search.
+        sims = self.fes.hybrid_search(
+            precursor_mz=precursor_mz, peaks=cleaned, ms2_tolerance_in_da=0.02
+        )
+        if exclude is not None and len(exclude):
+            sims = sims.copy()
+            sims[exclude] = 0.0
+
+        per_struct = np.zeros(self.n_structures, dtype=np.float32)
+        np.maximum.at(per_struct, self.struct_idx, sims)
+        return per_struct
+
     def analog_structures(
         self,
         precursor_mz: float,
@@ -353,23 +386,9 @@ class Library:
 
         Returns (structure indices, scores) for the top_n best analogs.
         """
-        cleaned = self.fes.clean_spectrum_for_search(
-            precursor_mz=precursor_mz, peaks=peaks, noise_threshold=NOISE_THRESHOLD
-        )
-        if len(cleaned) == 0:
+        per_struct = self.hybrid_scores(precursor_mz, peaks, exclude)
+        if per_struct is None:
             return np.empty(0, dtype=np.int64), np.empty(0, dtype=np.float32)
-
-        # No ms1_tolerance argument here: allowing the precursor to differ is
-        # the entire point of a hybrid search.
-        sims = self.fes.hybrid_search(
-            precursor_mz=precursor_mz, peaks=cleaned, ms2_tolerance_in_da=0.02
-        )
-        if exclude is not None and len(exclude):
-            sims = sims.copy()
-            sims[exclude] = 0.0
-
-        per_struct = np.zeros(self.n_structures, dtype=np.float32)
-        np.maximum.at(per_struct, self.struct_idx, sims)
 
         n = min(top_n, self.n_structures)
         top = np.argpartition(-per_struct, n - 1)[:n]

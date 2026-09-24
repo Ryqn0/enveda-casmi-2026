@@ -147,10 +147,11 @@ def main() -> None:
     ap.add_argument("--layers", type=int, default=4)
     ap.add_argument("--val-frac", type=float, default=0.05)
     ap.add_argument("--out", type=Path, default=DATA / "fpnet.pt")
+    ap.add_argument("--data", type=Path, default=DATA / "train.npz")
     args = ap.parse_args()
 
     dev = "cuda" if torch.cuda.is_available() else "cpu"
-    d = np.load(DATA / "train.npz", allow_pickle=True)
+    d = np.load(args.data, allow_pickle=True)
     n_bits = int(d["n_bits"])
     # uint8, not float32: 4x smaller, and collate() casts each batch's labels
     # to float32 anyway, which is the only place the float type is needed.
