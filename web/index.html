@@ -103,13 +103,18 @@
     const meta = await (await fetch("meta.json")).json();
     for (const a of Object.keys(meta.adduct_mass).sort()) $("adduct").add(new Option(a, a, false, a === "[M+H]+"));
 
+    // An ABSOLUTE URL, built from this page's address. ONNX Runtime loads its
+    // worker with import(), and import("vendor/x.mjs") -- no leading ./ -- is
+    // read as a package name, not a path: "Failed to resolve module
+    // specifier". An absolute URL also survives being served under a sub-path.
+    const VENDOR = new URL("vendor/", location.href).href;
     // Single-threaded WebAssembly: multi-threading needs cross-origin isolation
     // headers that a static host cannot be relied on to send.
-    ort.env.wasm.wasmPaths = "vendor/";
+    ort.env.wasm.wasmPaths = VENDOR;
     ort.env.wasm.numThreads = 1;
     const [session, RDKit] = await Promise.all([
       ort.InferenceSession.create("model.onnx", { executionProviders: ["wasm"] }),
-      initRDKitModule({ locateFile: (f) => "vendor/" + f }),
+      initRDKitModule({ locateFile: (f) => VENDOR + f }),
     ]);
 
     const shards = new Map();
