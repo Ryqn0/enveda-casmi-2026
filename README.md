@@ -4,6 +4,8 @@ Predicting 2D chemical structures (SMILES) from LC-MS/MS spectra for the
 [Enveda CASMI 2026 Kaggle competition](https://www.kaggle.com/competitions/enveda-CASMI26-molecule-id-mass-spectra).
 
 New to mass spectrometry? Start with **[docs/00-competition-primer.md](docs/00-competition-primer.md)**.
+Want the whole story in one read? **[docs/14-walkthrough.md](docs/14-walkthrough.md)** — every
+phase, every file, every command, and the lessons.
 
 **Metric:** MRR@25 on tautomer-canonical InChIKey14 — 25 ranked SMILES per molecule,
 score `1/rank` of the first correct one.
