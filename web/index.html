@@ -103,18 +103,36 @@
     const meta = await (await fetch("meta.json")).json();
     for (const a of Object.keys(meta.adduct_mass).sort()) $("adduct").add(new Option(a, a, false, a === "[M+H]+"));
 
-    // An ABSOLUTE URL, built from this page's address. ONNX Runtime loads its
-    // worker with import(), and import("vendor/x.mjs") -- no leading ./ -- is
-    // read as a package name, not a path: "Failed to resolve module
-    // specifier". An absolute URL also survives being served under a sub-path.
+    // An ABSOLUTE URL, built from this page's address (import("vendor/x") with
+    // no leading ./ is read as a package name, not a path).
     const VENDOR = new URL("vendor/", location.href).href;
+    // ONNX Runtime normally loads its glue module with a dynamic import() and
+    // its engine with its own fetch. On a PRIVATE Hugging Face Space every file
+    // needs the Space's authentication, and the dynamic import() arrived
+    // without it ("Failed to fetch dynamically imported module", though plain
+    // fetch() of the same file works). So download both with ordinary fetch()
+    // and hand them over from memory: the glue as a blob: URL (same-origin, no
+    // network request at all), the engine as raw bytes. Works on any host.
+    const grab = async (f) => {
+      const r = await fetch(VENDOR + f);
+      if (!r.ok) throw new Error(`${f}: HTTP ${r.status}`);
+      return r;
+    };
+    const [glue, engine, rdkitWasm] = await Promise.all([
+      grab("ort-wasm-simd-threaded.mjs").then((r) => r.text()),
+      grab("ort-wasm-simd-threaded.wasm").then((r) => r.arrayBuffer()),
+      grab("RDKit_minimal.wasm").then((r) => r.arrayBuffer()),   // same treatment for RDKit
+    ]);
+    ort.env.wasm.wasmPaths = {
+      mjs: URL.createObjectURL(new Blob([glue], { type: "text/javascript" })),
+    };
+    ort.env.wasm.wasmBinary = engine;
     // Single-threaded WebAssembly: multi-threading needs cross-origin isolation
     // headers that a static host cannot be relied on to send.
-    ort.env.wasm.wasmPaths = VENDOR;
     ort.env.wasm.numThreads = 1;
     const [session, RDKit] = await Promise.all([
       ort.InferenceSession.create("model.onnx", { executionProviders: ["wasm"] }),
-      initRDKitModule({ locateFile: (f) => VENDOR + f }),
+      initRDKitModule({ wasmBinary: rdkitWasm, locateFile: (f) => VENDOR + f }),
     ]);
 
     const shards = new Map();
