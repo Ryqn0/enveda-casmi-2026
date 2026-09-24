@@ -7,7 +7,8 @@ what went wrong and why; and the lessons worth carrying into your next project.
 The other docs (00–13) are the detailed lab notebook, written as things
 happened. This one is the story told once, start to finish, with hindsight.
 
-**Final state:** best public leaderboard score **0.341** (rank ~390 of ~1,227),
+**Final state:** best public leaderboard score **0.341** (rank ~390 of ~1,227);
+later **0.349** with one fix of ours (see the postscript to section 8 and docs/15);
 private GitHub repo, an in-browser demo on a free Hugging Face Space.
 
 ---
@@ -385,6 +386,13 @@ Leaderboard: **0.332 and 0.330** — slightly worse. Most likely reason:
 with fingerprints it became stronger alone but more similar to A.
 
 > **Evaluate what you ship, not a component of it.**
+
+**Postscript (Phase 7, docs/15): 0.349.** Taking that lesson literally, an
+offline harness now runs the whole engine on the 250 natural-product
+molecules. Reproducing the authors' published numbers exposed a bug: rank
+features broke ties by list position, and the true answer's position differed
+between training rows and serving. Averaging ties on both sides: harness
++0.0044 ± 0.0045, leaderboard **0.341 → 0.349**.
 
 One more false alarm handled correctly: the run's feature diagnostics looked
 shifted — because a notebook run's `test.parquet` is the **placeholder** (every

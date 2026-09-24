@@ -10,8 +10,9 @@ phase, every file, every command, and the lessons.
 **Metric:** MRR@25 on tautomer-canonical InChIKey14 — 25 ranked SMILES per molecule,
 score `1/rank` of the first correct one.
 
-**Best public LB: 0.341** — the public "W088" engine reproduced under this account
-(`kaggle/public_engine/`, credited below). Our own pipeline peaked at **0.244**.
+**Best public LB: 0.349** — the public "W088" engine (0.341, credited below) with one
+fix of ours: tie-averaged rank features (`kaggle/engine_ties/`, docs/15). Our own
+pipeline peaked at **0.244**.
 
 ## Setup
 
@@ -51,6 +52,7 @@ uv run python scripts/dryrun_notebook.py     # runs the real Kaggle notebook cel
 | 5 | structure-capped data, contrastive fine-tune, fragmentation, learned ranker | 0.204 / 0.234 |
 | 6 | public W088 engine, reproduced | **0.341** |
 | 6 | + leak-free fingerprints for its second ranker | 0.332 / 0.330 |
+| 7 | + tie-averaged rank features (found with the offline engine harness) | **0.349** |
 
 ## What the docs teach
 

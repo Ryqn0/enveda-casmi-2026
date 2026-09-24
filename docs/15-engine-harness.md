@@ -124,8 +124,10 @@ leaderboard can't resolve that either.
 ## Submitted
 
 `kaggle/engine_ties` (kernel `ryqn00/casmi26-engine-ties` v1, 41 min on
-Kaggle), submission 56528613. Expected ≈ +0.005 over 0.341, below the
-leaderboard's resolution: a score anywhere near 0.33–0.36 is consistent with it.
+Kaggle), submission 56528613: **LB 0.349** (from 0.341). Expected ≈ +0.005;
+got +0.008. That's in the predicted direction and the right size, but a single
+score can't separate +0.005 from +0.008 or from noise (±0.01). The evidence is
+the harness plus a principled cause; the leaderboard agrees with it.
 
 ## Lessons
 
