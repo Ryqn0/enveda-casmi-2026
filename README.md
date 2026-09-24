@@ -61,6 +61,9 @@ uv run python scripts/dryrun_notebook.py     # runs the real Kaggle notebook cel
 - **[13](docs/13-public-engine.md)** — why the public engine wins with channels no better
   than ours (a learned combiner, a kept library channel, the right training chemistry),
   and why a stronger component can make an ensemble worse.
+- **[15](docs/15-engine-harness.md)** — an offline harness for the whole engine; reproduce
+  published numbers before experimenting; a rank feature whose ties were broken by list
+  position, differently in training and serving.
 
 ## Credits
 

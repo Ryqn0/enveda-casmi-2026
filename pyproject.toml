@@ -15,6 +15,7 @@ dependencies = [
     "ms-entropy>=1.5.2",
     "torch>=2.14.0",
     "scikit-learn>=1.9.1",
+    "numba>=0.67.0",
 ]
 
 [project.optional-dependencies]
