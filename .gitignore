@@ -37,3 +37,11 @@ data/pool.parquet
 
 # fpnet training data + checkpoints (HF Hub is the home for weights)
 data/fpnet/
+
+# in-browser demo: generated artifacts (rebuild with scripts/build_web.py)
+web/node_modules/
+web/vendor/
+web/model.onnx
+web/meta.json
+web/pool/
+web/test/golden.json

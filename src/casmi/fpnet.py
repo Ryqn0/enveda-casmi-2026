@@ -211,9 +211,15 @@ def select_peaks(mzs, intensities, max_peaks: int) -> tuple[np.ndarray, np.ndarr
     mz = np.asarray(mzs, dtype=np.float32)
     it = np.asarray(intensities, dtype=np.float32)
     if mz.size > max_peaks:
-        keep = np.argpartition(it, -max_peaks)[-max_peaks:]
+        # Deterministic: most intense first, and among EXACTLY equal
+        # intensities the earlier peak wins (stable sort). np.argpartition
+        # used to pick among ties at the cutoff arbitrarily -- and the
+        # arbitrary choice can differ between numpy versions, so local and
+        # Kaggle results were not guaranteed identical. The in-browser port
+        # (web/core.js) uses the same rule; the golden test found the gap.
+        keep = np.sort(np.argsort(-it, kind="stable")[:max_peaks])
         mz, it = mz[keep], it[keep]
-    order = np.argsort(mz)
+    order = np.argsort(mz, kind="stable")
     return mz[order], it[order]
 
 
@@ -298,6 +304,12 @@ def load(path, device="cpu") -> tuple[FPNet, dict]:
 
 
 def _self_check() -> None:
+    # select_peaks must break intensity ties by position, deterministically --
+    # the same rule as web/core.js. Keeps 5, 4, 3 and the FIRST of the tied 1s.
+    m_, i_ = select_peaks(np.array([60, 50, 40, 30, 20, 10], np.float32),
+                          np.array([5, 1, 3, 1, 1, 4], np.float32), 4)
+    assert list(m_) == [10, 40, 50, 60] and list(i_) == [4, 3, 1, 5], (m_, i_)
+
     # Platt calibration with A=1, B=0 is the identity, so it must reproduce
     # uncalibrated scoring exactly. Catches a transposed or misaligned A/B.
     rng = np.random.default_rng(0)

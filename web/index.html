@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spectrum to Structure</title>
+<meta name="description" content="Identify a molecule from its tandem mass spectrum, entirely in your browser.">
+<style>
+  :root {
+    --bg: #f7f7f5; --panel: #ffffff; --ink: #1c1d1f; --muted: #5f6368;
+    --line: #e2e2dd; --accent: #2f5d8a; --accent-ink: #ffffff; --warn: #9a3412;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #151618; --panel: #1e2023; --ink: #e8e8e6; --muted: #a0a4aa;
+      --line: #33363b; --accent: #7fb0e0; --accent-ink: #0f1a24; --warn: #f0a070;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px 16px 48px; }
+  h1 { font-size: 1.6rem; margin: 0 0 4px; }
+  .lede { color: var(--muted); margin: 0 0 20px; max-width: 70ch; }
+  .form { display: grid; grid-template-columns: 2fr 1fr; gap: 16px;
+          background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; }
+  @media (max-width: 720px) { .form { grid-template-columns: 1fr; } }
+  label { display: block; font-size: .85rem; color: var(--muted); margin: 0 0 4px; }
+  textarea, input, select { width: 100%; font: inherit; color: var(--ink); background: var(--bg);
+          border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+  textarea { font-family: ui-monospace, "SF Mono", Menlo, monospace; min-height: 190px; resize: vertical; }
+  .field { margin-bottom: 12px; }
+  button { width: 100%; font: inherit; font-weight: 600; padding: 10px; border: 0; border-radius: 6px;
+           background: var(--accent); color: var(--accent-ink); cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { margin: 16px 0; color: var(--muted); min-height: 1.5em; }
+  #status.error { color: var(--warn); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 8px; }
+  .card svg { width: 100%; height: auto; display: block; background: #fff; border-radius: 6px; }
+  .card .rank { font-weight: 600; } .card .key { color: var(--muted); font-size: .8rem;
+          font-family: ui-monospace, Menlo, monospace; word-break: break-all; }
+  .table-wrap { overflow-x: auto; margin-top: 16px; }
+  table { border-collapse: collapse; width: 100%; background: var(--panel); font-size: .85rem; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  td.smi { font-family: ui-monospace, Menlo, monospace; word-break: break-all; }
+  td.num { text-align: right; white-space: nowrap; }
+  footer { margin-top: 28px; color: var(--muted); font-size: .85rem; max-width: 75ch; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Spectrum to structure</h1>
+  <p class="lede">
+    Paste the fragment peaks of a tandem mass spectrum. A transformer predicts which
+    substructures the molecule contains, then every natural product of matching mass
+    in <a href="https://coconut.naturalproducts.net">COCONUT</a> is ranked by how well its
+    fingerprint fits. Everything runs in your browser; nothing is uploaded.
+  </p>
+
+  <form class="form" id="form">
+    <div>
+      <label for="peaks">Peaks, one <code>m/z intensity</code> pair per line</label>
+      <textarea id="peaks" spellcheck="false">110.0600 0.15
+123.0441 0.31
+138.0662 1.00
+195.0877 0.42</textarea>
+    </div>
+    <div>
+      <div class="field"><label for="prec">Precursor m/z</label>
+        <input id="prec" type="number" step="0.0001" value="195.0877"></div>
+      <div class="field"><label for="adduct">Adduct</label><select id="adduct"></select></div>
+      <div class="field"><label for="ppm">Mass tolerance (ppm)</label>
+        <input id="ppm" type="number" min="1" max="20" step="0.5" value="5"></div>
+      <div class="field"><label for="k">Candidates to show</label>
+        <input id="k" type="number" min="1" max="25" step="1" value="10"></div>
+      <button id="go" type="submit" disabled>Loading…</button>
+    </div>
+  </form>
+
+  <div id="status">Loading the model and chemistry engine (~43 MB, cached after the first visit)…</div>
+  <div class="grid" id="cards"></div>
+  <div class="table-wrap" id="table"></div>
+
+  <footer>
+    The example is caffeine, [M+H]<sup>+</sup> at 195.0877. The model recognises
+    structures; it never invents one, so a molecule missing from COCONUT cannot be found.
+    Built for the Enveda CASMI 2026 Kaggle competition.
+  </footer>
+</main>
+
+<script src="vendor/ort.wasm.min.js"></script>
+<script src="vendor/RDKit_minimal.js"></script>
+<script type="module">
+  import {
+    candidateBits, neutralMass, parsePeaks, predictLogits, queryPool, rankTop, scoreCandidates,
+  } from "./core.js";
+
+  const $ = (id) => document.getElementById(id);
+  const status = (msg, error = false) => { $("status").textContent = msg; $("status").className = error ? "error" : ""; };
+
+  try {
+    const meta = await (await fetch("meta.json")).json();
+    for (const a of Object.keys(meta.adduct_mass).sort()) $("adduct").add(new Option(a, a, false, a === "[M+H]+"));
+
+    // Single-threaded WebAssembly: multi-threading needs cross-origin isolation
+    // headers that a static host cannot be relied on to send.
+    ort.env.wasm.wasmPaths = "vendor/";
+    ort.env.wasm.numThreads = 1;
+    const [session, RDKit] = await Promise.all([
+      ort.InferenceSession.create("model.onnx", { executionProviders: ["wasm"] }),
+      initRDKitModule({ locateFile: (f) => "vendor/" + f }),
+    ]);
+
+    const shards = new Map();
+    const fetchShard = async (b) => {
+      if (!shards.has(b)) shards.set(b, fetch(`pool/${b}.json`).then((r) => (r.ok ? r.json() : null)));
+      return shards.get(b);
+    };
+
+    $("go").disabled = false; $("go").textContent = "Identify";
+    status("Ready.");
+
+    $("form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      $("go").disabled = true; $("cards").replaceChildren(); $("table").replaceChildren();
+      try {
+        const peaks = parsePeaks($("peaks").value);
+        const prec = Number($("prec").value), adduct = $("adduct").value;
+        const ppm = Number($("ppm").value), k = Math.min(25, Math.max(1, Number($("k").value)));
+        if (!(prec > 0)) throw new Error("Precursor m/z must be positive.");
+        const m = neutralMass(prec, adduct, meta);
+        if (!(m > 0)) throw new Error("That adduct gives no positive neutral mass for this precursor.");
+
+        status("Searching candidates…");
+        const { smiles, keys, masses } = await queryPool(fetchShard, m, ppm);
+        if (!smiles.length) throw new Error(`No COCONUT structure within ±${ppm} ppm of ${m.toFixed(4)} Da. Check the precursor and adduct.`);
+
+        status(`Scoring ${smiles.length} candidates…`);
+        const { logits } = await predictLogits(session, ort, peaks, prec, adduct, meta);
+        const scores = scoreCandidates(logits, smiles.map((s) => candidateBits(RDKit, s, meta)));
+        const top = rankTop(scores, k);
+
+        for (const [r, i] of top.entries()) {
+          const card = document.createElement("div"); card.className = "card";
+          const mol = RDKit.get_mol(smiles[i]);
+          if (mol) { card.innerHTML = mol.get_svg(240, 180); mol.delete(); }
+          const cap = document.createElement("div");
+          cap.innerHTML = `<span class="rank">#${r + 1}</span> <span class="key"></span>`;
+          cap.querySelector(".key").textContent = keys[i];
+          card.append(cap); $("cards").append(card);
+        }
+        const tbl = document.createElement("table");
+        tbl.innerHTML = "<thead><tr><th>rank</th><th>SMILES</th><th>neutral mass</th><th>score</th></tr></thead>";
+        const body = tbl.createTBody();
+        for (const [r, i] of top.entries()) {
+          const row = body.insertRow();
+          [String(r + 1), smiles[i], masses[i].toFixed(4), scores[i].toFixed(1)].forEach((v, c) => {
+            const cell = row.insertCell(); cell.textContent = v;
+            cell.className = c === 1 ? "smi" : c > 1 ? "num" : "";
+          });
+        }
+        $("table").append(tbl);
+        status(`${smiles.length} candidates matched ${prec.toFixed(4)} ${adduct} within ±${ppm} ppm. Showing the top ${top.length}.`);
+      } catch (err) {
+        status(err.message, true);
+      } finally {
+        $("go").disabled = false;
+      }
+    });
+  } catch (err) {
+    status("Could not load the model: " + err.message, true);
+  }
+</script>
+</body>
+</html>
