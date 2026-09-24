@@ -98,6 +98,12 @@ def channels(E, workers: int) -> None:
     fp_paths = sorted(glob.glob(str(PUB / "engine" / "fp_*.pt")))
     assert len(fp_paths) == 2, fp_paths
     models = pv_fp.load_fp_models(fp_paths, dev)[:2] + (dev,)
+    extra = ()
+    if fp2_variant(E):
+        # The fpb variants feed ranker B from megayak's leak-free models.
+        fp2 = sorted(glob.glob(str(PUB / "ours_fpnet_*.pt")))
+        assert len(fp2) == 2, fp2
+        extra = (pv_fp.load_fp_models(fp2, dev)[:2] + (dev,),)
 
     # Hide ONE molecule at a time. The other 249 are ordinary training rows: on
     # the real test they ARE in the library, and many are isomers of each
@@ -130,7 +136,7 @@ def channels(E, workers: int) -> None:
                 ps, ss = search(R, Q, target)
                 return ps[ps != p], ss[ps != p]
             E.analog_search = analog_without_self if sim == "c2" else search
-            recs[sim] += E.compute_channels(L, I, models, sub)[1]
+            recs[sim] += E.compute_channels(L, I, models, sub, *extra)[1]
             L["row_p"][hide] = old
     E.analog_search = search
     del L, I
@@ -141,9 +147,25 @@ def channels(E, workers: int) -> None:
     np.savez(OUT / "pool.npz", fp=E.POOL["fp"], mass=E.POOL["mass"],
              keys=E.POOL["keys"].astype(str), smiles=E.POOL["smiles"].astype(str))
     truth = te.groupby("molecule_id").normalized_smiles.first().to_dict()
-    with open(OUT / "recs.pkl", "wb") as f:
+    with open(recs_path(E), "wb") as f:
         pickle.dump({"recs": recs, "truth": truth}, f)
-    E.log(f"saved {OUT.relative_to(ROOT)}/recs.pkl and pool.npz")
+    E.log(f"saved {recs_path(E).relative_to(ROOT)} and pool.npz")
+
+
+def fp2_variant(E) -> bool:
+    """True for the fpb variants (a second fingerprint model set for ranker B)."""
+    return hasattr(E, "FP_COLS")
+
+
+def recs_path(E) -> Path:
+    # Channels differ only when a second model set adds zlog2; the ties
+    # variant changes features, not channels, so it shares recs.pkl.
+    return OUT / ("recs_fp2.pkl" if fp2_variant(E) else "recs.pkl")
+
+
+def b_serve(E) -> dict:
+    """How ranker B is served: no fingerprints, or the fpb variants' zlog2."""
+    return dict(use_fp=True, zkey="zlog2") if fp2_variant(E) else dict(use_fp=False)
 
 
 def match_np_groups(E, recs) -> dict:
@@ -217,11 +239,13 @@ def retie(X, G, pairs):
     return X
 
 
-def fit_ours(E, exclude_groups=None, keep_np: bool = False, ties: str = "engine"):
+def fit_ours(E, exclude_groups=None, keep_np: bool = False, ties: str = "engine",
+             np_weight: float = 1.0):
     """Ranker B exactly as fit_rankers, on its rows minus some np groups.
 
     keep_np: all rows (leaky; what ships). exclude_groups: the np groups to
-    leave out. Neither: leave out every np group.
+    leave out. Neither: leave out every np group. np_weight multiplies the
+    sample weight of the np rows (the only timsTOF, test-like ones).
     """
     z = np.load(PUB / "sim_rank_rows_nofp.npz", allow_pickle=True)
     is_np = z["Q"] == list(z["sets"]).index("np")
@@ -232,19 +256,28 @@ def fit_ours(E, exclude_groups=None, keep_np: bool = False, ties: str = "engine"
     else:
         keep = ~is_np | ~np.isin(z["G"], list(exclude_groups))
     X, Y, S = z["X"][keep], z["Y"][keep], z["S"][keep]
+    if fp2_variant(E):
+        # As the fpb engine's fit_rankers: fingerprint columns from the
+        # leak-free rows (same candidates, same order -- checked there).
+        zf = np.load(PUB / "sim_rank_rows_fppair.npz", allow_pickle=True)
+        assert np.array_equal(zf["G"], z["G"]) and np.array_equal(zf["Y"], z["Y"])
+        X = X.copy()
+        X[:, E.FP_COLS] = zf["X"][keep][:, E.FP_COLS]
     if hasattr(E, "retie"):             # a variant notebook that reties itself
         X = E.retie(X, z["G"][keep], E.RANK_COLS_B)
     elif ties == "average":
         X = retie(X, z["G"][keep], RANK_COLS_B)
-    rankers = [E._hgb(X, Y, np.where(S == 0, wA, 1.0 - wA), sd, E.RANK.GBM)
+    boost = np.where(is_np[keep], np_weight, 1.0)
+    rankers = [E._hgb(X, Y, np.where(S == 0, wA, 1.0 - wA) * boost, sd, E.RANK.GBM)
                for wA in E.RANK.W_A for sd in E.RANK.SEEDS]
     return rankers, [str(b) for b in z["blocks"]]
 
 
 def variant_tag(args) -> str:
-    """Cache-name suffix: fitted models depend on the notebook and the tie mode."""
+    """Cache-name suffix: fitted models depend on the notebook, tie mode, np weight."""
     return (("" if args.ties == "engine" else "_tiesavg")
-            + ("" if args.nb.resolve() == NB.resolve() else f"_{args.nb.stem}"))
+            + ("" if args.nb.resolve() == NB.resolve() else f"_{args.nb.stem}")
+            + ("" if args.np_weight == 1.0 else f"_npw{args.np_weight:g}"))
 
 
 def ours_scores(E, recs, args) -> dict:
@@ -252,8 +285,9 @@ def ours_scores(E, recs, args) -> dict:
     tag = variant_tag(args)
     if args.b_train in ("nonp", "all"):
         rk, blocks = cached(f"ours_{args.b_train}{tag}",
-                            lambda: fit_ours(E, keep_np=args.b_train == "all", ties=args.ties))
-        return {sim: E.score_molecules(recs[sim], rk, blocks, use_fp=False) for sim in recs}
+                            lambda: fit_ours(E, keep_np=args.b_train == "all", ties=args.ties,
+                                             np_weight=args.np_weight))
+        return {sim: E.score_molecules(recs[sim], rk, blocks, **b_serve(E)) for sim in recs}
     # cv: molecule-level folds; a fold's model never sees that fold's groups.
     g2m = match_np_groups(E, recs)
     s = np.load(PUB / "sim_rank_rows_nofp.npz", allow_pickle=True)
@@ -265,10 +299,11 @@ def ours_scores(E, recs, args) -> dict:
         # Excluded = this fold's groups + every np group we could not match.
         allowed = {g for g, m in g2m.items() if fold[m] != k}
         rk, blocks = cached(f"ours_cv{k}{tag}",
-                            lambda: fit_ours(E, exclude_groups=np_groups - allowed, ties=args.ties))
+                            lambda: fit_ours(E, exclude_groups=np_groups - allowed, ties=args.ties,
+                                             np_weight=args.np_weight))
         for sim in recs:
             part = [r for r in recs[sim] if fold[r["mid"]] == k]
-            out[sim].update(E.score_molecules(part, rk, blocks, use_fp=False))
+            out[sim].update(E.score_molecules(part, rk, blocks, **b_serve(E)))
     return out
 
 
@@ -311,7 +346,7 @@ def reciprocal_ranks(E, recs, scores, truth, ckey) -> pd.Series:
 def score(E, args) -> None:
     z = np.load(OUT / "pool.npz", allow_pickle=True)
     E.POOL = {k: z[k] for k in ("fp", "mass", "keys", "smiles")}
-    d = pickle.load(open(OUT / "recs.pkl", "rb"))
+    d = pickle.load(open(recs_path(E), "rb"))
     recs = d["recs"]
     truth = {m: E.canon_key(s) for m, s in d["truth"].items()}
 
@@ -327,7 +362,8 @@ def score(E, args) -> None:
         import pv
         pv._rank_norm = rank_norm_avg      # serving side; E._rel reads it from pv too
     else:
-        pvr, _ = cached(f"pv{variant_tag(args)}",
+        # np_weight only concerns ranker B, so it must not force a refit of A.
+        pvr, _ = cached(f"pv{variant_tag(args).split('_npw')[0]}",
                         lambda: E.fit_pv_rankers(str(PUB / "engine" / "rank_train.npz")))
     s_ours_all = ours_scores(E, recs, args)
 
@@ -338,6 +374,10 @@ def score(E, args) -> None:
         sets = {"pv": s_pv, "ours": s_ours}
         for w in args.w_pv:
             sets[f"blend {w:g}"] = E.blend_scores(s_pv, s_ours, w)
+        for w in args.prob_blend:
+            # Probabilities instead of within-molecule ranks: keeps how SURE
+            # each ranker is, which the rank blend throws away.
+            sets[f"prob {w:g}"] = {m: w * s_pv[m] + (1 - w) * s_ours[m] for m in s_pv}
         for name, sc in sets.items():
             per[(name, sim)] = reciprocal_ranks(E, recs[sim], sc, truth, ckey)
 
@@ -365,6 +405,10 @@ def main() -> None:
                          "no query-set rows, or all rows (leaky; what ships)")
     ap.add_argument("--ties", choices=["engine", "average"], default="engine",
                     help="rank features: the engine's position-broken ties, or averaged ties")
+    ap.add_argument("--prob-blend", type=float, nargs="*", default=[],
+                    help="also score probability blends w*A + (1-w)*B")
+    ap.add_argument("--np-weight", type=float, default=1.0,
+                    help="multiply the sample weight of ranker B's timsTOF (np) rows")
     ap.add_argument("--nb", type=Path, default=NB,
                     help="engine notebook to test (default: the unmodified public engine)")
     args = ap.parse_args()

@@ -98,6 +98,35 @@ confirm it by itself. The harness evidence is what supports it.
 `scripts/make_engine_ties.py` builds the variant (`kaggle/engine_ties/`), the
 same way as the earlier variants: exact-match text patches, credit kept.
 
+## Does the harness reproduce the leaderboard?
+
+The only other scored variants are the two fpb notebooks (docs/13). Harness,
+paired against W088:
+
+| variant | harness | leaderboard vs 0.341 |
+|---|---|---|
+| fpb, w_pv 0.50 | **−0.0106 ± 0.0054** | 0.330 (−0.011) |
+| fpb, w_pv 0.88 | +0.0027 ± 0.0036 (a tie) | 0.332 (−0.009, about 1 SE of LB noise) |
+
+The clear loss is predicted; the other is a tie on both sides within their
+noise. That's better than docs/13's component test (ranker B alone looked
+clearly better; the harness shows B does improve by +0.009 but the blend
+doesn't). It can't validate the harness at the ±0.005 level, because the
+leaderboard can't resolve that either.
+
+## Other experiments (on the ties variant; no gain)
+
+| change | blend 0.88, paired |
+|---|---|
+| blend probabilities instead of ranks (w = 0.5 … 0.9) | best −0.0028 ± 0.0044 |
+| ranker B: timsTOF (np) rows weighted ×3 | −0.0004 ± 0.0011 (B alone +0.0014) |
+
+## Submitted
+
+`kaggle/engine_ties` (kernel `ryqn00/casmi26-engine-ties` v1, 41 min on
+Kaggle), submission 56528613. Expected ≈ +0.005 over 0.341, below the
+leaderboard's resolution: a score anywhere near 0.33–0.36 is consistent with it.
+
 ## Lessons
 
 - **Reproduce the published numbers before experimenting.** Every mismatch
