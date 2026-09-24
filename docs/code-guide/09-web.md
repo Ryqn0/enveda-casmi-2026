@@ -106,7 +106,7 @@ checkpoint**, so nobody retypes a constant into JavaScript.
   ```
   One JSON file per dalton: `194.json` holds every structure with mass
   194.000–194.999. A query downloads only the one or two files its window
-  touches, a few hundred KB instead of all 57 MB (2,593 files).
+  touches, tens of KB instead of all 53 MB (2,593 files; `194.json` is 39 KB).
   `separators=(",", ":")` drops the spaces JSON normally adds (smaller files).
   Masses are rounded to 6 decimals (1 µDa, far below the ppm window).
 
