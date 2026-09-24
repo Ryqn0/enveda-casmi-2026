@@ -78,7 +78,7 @@ K = 25
 
 
 class CombinedRanker:
-    """Ranks pool candidates using both spectral channels."""
+    """Ranks pool candidates by combining the evidence channels (see module docstring)."""
 
     def __init__(self, lib: Library, pool: CandidatePool,
                  analog_weight: float = ANALOG_WEIGHT,
