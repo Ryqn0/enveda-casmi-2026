@@ -8,39 +8,63 @@ New to mass spectrometry? Start with **[docs/00-competition-primer.md](docs/00-c
 **Metric:** MRR@25 on tautomer-canonical InChIKey14 — 25 ranked SMILES per molecule,
 score `1/rank` of the first correct one.
 
+**Best public LB: 0.341** — the public "W088" engine reproduced under this account
+(`kaggle/public_engine/`, credited below). Our own pipeline peaked at **0.244**.
+
 ## Setup
 
 ```bash
 uv sync --extra dev
-cp .env.example .env      # fill in KAGGLE_USERNAME / KAGGLE_KEY
+cp .env.example .env      # fill in KAGGLE_API_TOKEN and HF_TOKEN
 ```
 
-Credentials come from [kaggle.com/settings](https://www.kaggle.com/settings) →
-API → Create New Token.
+The Kaggle CLI (2.x) reads the token from `KAGGLE_API_TOKEN` or `~/.kaggle/access_token`
+(kaggle.com/settings → API → Create New Token).
 
 ## Layout
 
 ```
-docs/       competition primer, notes per phase
-src/casmi/  library code (metric, data loading, models)
-scripts/    reproducible entry points
-notebooks/  exploration only — findings get promoted into src/
-app/        the deployed demo
+docs/                 primer, then one note per phase (read in order)
+src/casmi/            our pipeline: pool, analog search, library, fpnet, fragmentation, ranker
+scripts/              training, validation and packaging entry points
+kaggle/               our submission notebook + the public engine and its variants
+app/                  Gradio demo
 ```
 
 ## Verify
 
 ```bash
-uv run python src/casmi/metric.py     # scorer self-check (asserts agreement with the host)
+uv run python src/casmi/metric.py            # scorer self-check (asserts agreement with the host)
+uv run python scripts/dryrun_notebook.py     # runs the real Kaggle notebook cells locally
 ```
 
-## Status
+## History
 
-- [x] Phase 0 — offline metric
-- [x] Phase 1 — library-search baseline — **public LB 0.130** (local class-1 MRR 0.845, class 3 0.000)
-- [x] Phase 2 — candidate pool + analog propagation — **public LB 0.240**, rank 627/1193
-- [x] Phase 3 — fingerprint model — **public LB 0.244**, rank 646/1227 (+0.004 over analog-only)
-- [x] Phase 4 — rank fusion — fpnet + 0.5*analog, weight swept on the test instrument
-- [ ] Phase 5 — deployed demo — app/app.py works locally, not yet on HF Spaces
+| phase | what | public LB |
+|---|---|---:|
+| 1 | spectral library search | 0.130 |
+| 2 | candidate pool (COCONUT + train) + analog propagation | 0.240 |
+| 3 | fingerprint model (fpnet) + fixed blend | **0.244** |
+| 4 | engineered features, weight picked on a leaky holdout | 0.228 |
+| 5 | structure-capped data, contrastive fine-tune, fragmentation, learned ranker | 0.204 / 0.234 |
+| 6 | public W088 engine, reproduced | **0.341** |
+| 6 | + leak-free fingerprints for its second ranker | 0.332 / 0.330 |
 
-Notebook runs on Kaggle in ~8 min (see docs/05-kaggle-runtime-notes.md); submission is a notebook re-run, not a CSV upload.
+## What the docs teach
+
+- **[09](docs/09-the-validation-leak.md)** — a holdout that overlaps the model's training
+  data grades memory, not skill. Exclude the model's *training set*, not just the query.
+- **[12](docs/12-wrong-chemistry.md)** — right instrument, wrong chemistry. Trust a holdout
+  only if it reproduces the leaderboard's ordering of submissions you already have.
+- **[13](docs/13-public-engine.md)** — why the public engine wins with channels no better
+  than ours (a learned combiner, a kept library channel, the right training chemistry),
+  and why a stronger component can make an ensemble worse.
+
+## Credits
+
+`kaggle/public_engine/` is an unmodified copy of
+[CASMI26 Next Direct W088](https://www.kaggle.com/code/llccqq624/casmi26-next-direct-w088)
+by **Jiachen Li**, built on public work by **prvsiyan** (Analog Propagation),
+**haideptry** (4-channel retrieval + neural fingerprint ranker) and **megayak**
+(Two Rankers, One Engine; leak-free fingerprint models). Apache 2.0, as public
+Kaggle notebooks. Variants in `kaggle/engine_fpb_*` are ours, built on it.
