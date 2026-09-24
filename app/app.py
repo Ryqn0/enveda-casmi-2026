@@ -6,7 +6,7 @@ WHY THIS USES ONLY THE MODEL, NOT THE FULL PIPELINE
     16 GB RAM and a cold start budget measured in seconds, so shipping the index
     would make the demo slow and fragile.
 
-    The fingerprint model needs neither. 22 MB of weights plus a 35 MB candidate
+    The fingerprint model needs neither. 28 MB of weights plus a 35 MB candidate
     pool is the whole dependency, and it is the part that is genuinely ours:
     spectrum -> substructures -> ranked candidates. Analog propagation is left
     out, which costs accuracy on molecules that have a close spectral relative,
@@ -35,13 +35,15 @@ RDLogger.DisableLog("rdApp.*")
 ROOT = Path(__file__).resolve().parents[1]
 # On a Space these are downloaded from the Hub at startup; locally they are the
 # files training and build_pool produced.
-MODEL_PATH = Path(os.environ.get("MODEL_PATH", ROOT / "data" / "fpnet" / "fpnet.pt"))
+# v4c: of our models, the best on natural products (docs/12).
+MODEL_PATH = Path(os.environ.get("MODEL_PATH", ROOT / "data" / "fpnet" / "fpnet_v4c.pt"))
 POOL_PATH = Path(os.environ.get("POOL_PATH", ROOT / "data" / "pool.parquet"))
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MODEL, CK = load(MODEL_PATH, device=DEVICE)
 BIT_SEL = np.asarray(CK["bit_sel"])
 ADDUCTS = list(CK["adduct_list"])
+MAX_PEAKS = int(CK.get("max_peaks", 128))
 POOL = CandidatePool(POOL_PATH)
 
 EXAMPLE = """110.0600 0.15
@@ -87,6 +89,10 @@ def identify(peak_text: str, precursor_mz: float, adduct: str, ppm: float, top_k
     logits = predict_logits(
         MODEL, [(precursor_mz, peaks)], adduct, ADDUCTS,
         instrument_id_=0, device=DEVICE,
+        # The cap the model was TRAINED with. Omitting it fell back to the
+        # default of 128 while the model was trained on 256 -- the same
+        # train/serve skew fixed in the competition pipeline in Phase 3.
+        max_peaks=MAX_PEAKS,
     )
     scores = score_candidates(logits, candidate_bits(POOL.smiles[cand], BIT_SEL))
     order = np.argsort(-scores)[:top_k]
