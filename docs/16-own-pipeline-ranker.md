@@ -99,4 +99,31 @@ Caveat going in: for our pipeline the harness has run *high* (analog-only
 predicted 0.276, real 0.240), while for the public engine it ran low (0.306 →
 0.341). The leaderboard decides.
 
-Submission 56548009: **LB pending**.
+Submission 56548009: **LB 0.244**, the same as the old fixed blend (0.244).
+The harness had predicted about +0.02 on the leaderboard scale; the observed
++0.000 is 1–2 standard errors of leaderboard noise below that.
+
+## 7. Why didn't the harness gain show up?
+
+**Hypothesis tested: memorised fingerprints.** Class-1 test molecules have
+public spectra, so every shipped fingerprint model trained on them; the
+harness used v5, which never saw the eval molecules in either class. Making the
+harness test-like (class-1 rows from v4c, which had seen 1,931 of those
+simulations' molecules; class 2 from v5):
+
+| config | class 1 | class 2 | predicted LB |
+|---|---:|---:|---:|
+| learned ranker | 0.861 | 0.662 | 0.285 |
+| analog only | 0.902 | 0.588 | 0.276 |
+| fixed blend | 0.864 | 0.555 | 0.262 |
+
+The effect is real but small (fingerprints alone, class 1: 0.34 → 0.44), and
+the harness still ranks the fixed blend below analog-only, the reverse of the
+leaderboard (0.244 vs 0.240). So it isn't the main explanation.
+
+**What is known:** on these 250 molecules the harness has run **high** for our
+pipeline twice (analog-only 0.276 → LB 0.240; ranker ~+0.02 → +0.000) and
+**low** for the public engine (0.306 → 0.341). For our pipeline, the eval set
+is not a faithful stand-in for the test, for a reason not yet identified. The
+ranker may still be a small real gain hidden by leaderboard noise; one
+submission can't tell.
