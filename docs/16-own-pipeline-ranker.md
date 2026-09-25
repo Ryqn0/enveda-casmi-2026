@@ -194,3 +194,24 @@ it. The dry run now rejects empty bodies as Jupyter does.
 On its own, our pipeline stays at 0.244: the harness overrates it, for a reason
 not identified. As a **second opinion** for the engine, it adds measurably,
 because it is right on different molecules.
+
+## 10. A learned stacker instead of the fixed rule? (no)
+
+`scripts/stack_harness.py` tests learned combiners of ranker A, ranker B and
+ours (scores, ranks, gaps, an in-our-window flag, molecule context),
+cross-validated 5-fold by molecule, paired against the submitted rule:
+
+| combiner | predicted LB | vs submitted rule |
+|---|---:|---:|
+| submitted rule (0.9 engine + 0.1 ours) | 0.3099 | |
+| tuned rule (weights picked on training folds) | 0.3056 | −0.0043 ± 0.0038 |
+| logistic-regression stacker | 0.3137 | +0.0039 ± 0.0071 |
+| gradient-boosted stacker (depth 3) | 0.3118 | +0.0019 ± 0.0064 |
+
+No stacker is clearly better: with 246 molecules, their error bars are twice
+the size of the gain they could bring. The tuned rule is the telling row.
+Picked honestly per fold, the weights jump around (our share 0.1 to 0.3) and
+score lower. So 246 molecules can't choose weights reliably, and the submitted
+0.1 (chosen on all of them) is itself flattered by about that much in the
+harness. Not submitted. The limit is the amount of test-like data, not model
+capacity.

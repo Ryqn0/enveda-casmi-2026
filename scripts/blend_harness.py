@@ -48,7 +48,7 @@ def main() -> None:
     tally = {sim: {"both": 0, "engine only": 0, "ours only": 0, "neither": 0} for sim in ("c1", "c2")}
     for sim in ("c1", "c2"):
         for m in mols:
-            ke, se = eng[sim][m]
+            ke, se = eng[sim][m][:2]
             ko, so = own[sim][m]
             truth = np.flatnonzero(ke == m)
             ours_on_eng = dict(zip(ko, so))

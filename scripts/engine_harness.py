@@ -383,8 +383,11 @@ def score(E, args) -> None:
         if args.dump:
             # Per-candidate scores of the first blend, by structure key, for
             # combining with another pipeline (scripts/blend_harness.py).
+            # (keys, blend, ranker A, ranker B): the separate rankers let a
+            # stacker learn its own combination (scripts/stack_harness.py).
             dumps[sim] = {r["mid"]: (E.POOL["keys"][r["cand"]].astype(str),
-                                     sets[f"blend {args.w_pv[0]:g}"][r["mid"]])
+                                     sets[f"blend {args.w_pv[0]:g}"][r["mid"]],
+                                     s_pv[r["mid"]], s_ours[r["mid"]])
                           for r in recs[sim] if r["mid"] in s_pv}
     if args.dump:
         pickle.dump(dumps, open(args.dump, "wb"))
