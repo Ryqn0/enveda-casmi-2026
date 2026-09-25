@@ -170,12 +170,39 @@ def score(args) -> None:
     print(f"train {len(Xtr):,} rows ({int(ytr.sum())} true), eval {len(Xev):,} rows; "
           f"{len(keep)} features" + (f" (dropped {args.drop})" if args.drop else ""))
 
-    p = np.zeros(len(Xev))
-    for wA in W_A:
-        for sd in SEEDS:
-            m = HistGradientBoostingClassifier(random_state=sd, **GBM)
-            m.fit(Xtr[:, keep], ytr, sample_weight=np.where(c1tr, wA, 1 - wA))
-            p += m.predict_proba(Xev[:, keep])[:, 1]
+    # Monotonic constraints: more evidence can never make a candidate LESS
+    # likely. Without them the ranker learned "has library spectra ->
+    # suspicious" from the class-2 simulations (where the truth is hidden, so
+    # every candidate WITH spectra is wrong), and in class 1 overruled a 0.9
+    # identity match for a candidate with no spectra at all (78/244 molecules).
+    names = [FEATURE_NAMES[i] for i in keep]
+    up = ("id_max_raw", "id_mean_raw", "hyb_self_raw", "analog_raw", "fp_raw", "frag_raw")
+    down = ("id_max_rank", "id_mean_rank", "hyb_self_rank", "analog_rank", "fp_rank", "frag_rank")
+    mono = [1 if n in up else -1 if n in down else 0 for n in names] if args.monotonic else None
+
+    def fit_predict(Xa, ya, c1a, Xb):
+        out = np.zeros(len(Xb))
+        for wA in W_A:
+            for sd in SEEDS:
+                m = HistGradientBoostingClassifier(random_state=sd, monotonic_cst=mono, **GBM)
+                m.fit(Xa[:, keep], ya, sample_weight=np.where(c1a, wA, 1 - wA))
+                out += m.predict_proba(Xb[:, keep])[:, 1]
+        return out
+
+    if args.cv_eval:
+        # Also train on the eval molecules' rows -- the only timsTOF ones --
+        # 5-fold by MOLECULE (both simulations of a molecule stay together),
+        # so each is scored by a model that never saw it.
+        mol = gev // 2
+        fold = dict(zip(np.unique(mol), np.random.default_rng(0).permutation(len(np.unique(mol))) % 5))
+        f = np.array([fold[x] for x in mol])
+        p = np.zeros(len(Xev))
+        for k in range(5):
+            tr, te = f != k, f == k
+            p[te] = fit_predict(np.vstack([Xtr, Xev[tr]]), np.concatenate([ytr, yev[tr]]),
+                                np.concatenate([c1tr, c1ev[tr]]), Xev[te])
+    else:
+        p = fit_predict(Xtr, ytr, c1tr, Xev)
 
     # Fixed-blend baselines on the SAME candidates: the 0.244-style pipeline.
     col = {n: i for i, n in enumerate(FEATURE_NAMES)}
@@ -218,6 +245,10 @@ def main() -> None:
     ap.add_argument("--model", default=None,
                     help="fp: checkpoint path; score: its stem (fp_<stem>.pkl), or omit for no fpnet")
     ap.add_argument("--drop", nargs="*", default=[], help="score: drop features by name prefix")
+    ap.add_argument("--monotonic", action="store_true",
+                    help="score: evidence features may only raise a candidate's score")
+    ap.add_argument("--cv-eval", action="store_true",
+                    help="score: also train on the eval molecules, 5-fold by molecule")
     args = ap.parse_args()
     if args.stage == "evidence":
         evidence(args.workers, args.only)
