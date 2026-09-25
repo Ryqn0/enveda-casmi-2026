@@ -127,3 +127,49 @@ pipeline twice (analog-only 0.276 → LB 0.240; ranker ~+0.02 → +0.000) and
 is not a faithful stand-in for the test, for a reason not yet identified. The
 ranker may still be a small real gain hidden by leaderboard noise; one
 submission can't tell.
+
+**Systematic differences checked** (the downloadable `test.parquet` is a
+placeholder, so the two pipelines can't be compared on the real test):
+- *Candidate window.* Ours is ±4 ppm with a +0.98 ppm correction; the engine's
+  is ±10 ppm (30 ppm fallback). `enveda-np-examples` reads higher than
+  enveda-180 (raw median +1.54 vs +0.98 ppm; +2.0 for [M+H]+): after our
+  correction 97% of its spectra fall within 4 ppm, 99th percentile 6.6 ppm.
+  Worth an estimated 0.005–0.008 of LB, but already inside the harness numbers,
+  so it can't explain why the harness overrates us.
+- *Tautomer de-duplication.* The engine removes duplicate structures from its
+  top 25; our pool keys are already unique. Negligible.
+
+## 8. Our ranker as a second opinion for the public engine
+
+`scripts/blend_harness.py` combines the two harnesses' per-candidate scores
+(`--dump` in both) on the same 246 molecules.
+
+**Where they disagree** (each pipeline's top-1 on its own candidates):
+
+| class | both right | engine only | ours only | neither |
+|---|---:|---:|---:|---:|
+| 1 | 180 | 29 | 15 | 22 |
+| 2 | 101 | 48 | 27 | 70 |
+
+Ours is right where the engine is wrong on 42 molecule-simulations: they make
+different mistakes, the condition for a blend to help.
+
+**The blend**, `(1 − w)·engine rank + w·our rank` on the engine's candidates:
+
+| w | class 1 | class 2 | predicted LB | vs engine alone |
+|---|---:|---:|---:|---:|
+| 0 | 0.905 | 0.724 | 0.3058 | |
+| **0.1** | 0.914 | 0.735 | **0.3099** | **+0.0040 ± 0.0035** |
+| 0.2 | 0.917 | 0.732 | 0.3095 | +0.0036 ± 0.0049 |
+| 0.3 | 0.914 | 0.734 | 0.3095 | +0.0037 ± 0.0062 |
+| 0.5 | 0.913 | 0.713 | 0.3047 | −0.0012 ± 0.0084 |
+| 1 | 0.858 | 0.655 | 0.2831 | −0.0228 ± 0.0131 |
+
+`scripts/make_engine_plus_own.py` builds it (`kaggle/engine_plus_own/`): our
+modules are written into the notebook as a real `casmi` package, our pipeline
+runs first and frees its memory, then the engine's `make_submissions` is wrapped
+to apply the blend at w = 0.1. `scripts/dryrun_engine_notebook.py` executes
+engine-style notebooks locally (fake `/kaggle/input`, `%%writefile` honoured):
+20 molecules OK.
+
+Submission: **pending**.

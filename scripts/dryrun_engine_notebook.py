@@ -83,6 +83,10 @@ def main() -> None:
         for i, s in enumerate(srcs):
             if s.startswith("%%writefile "):
                 head, body = s.split("\n", 1) if "\n" in s else (s, "")
+                # Jupyter refuses an empty body ("UsageError: ... the cell body
+                # is empty"); a dry run that allowed it passed a notebook that
+                # then died on Kaggle.
+                assert body.strip(), f"code cell {i}: {head} has an empty body (Jupyter rejects it)"
                 # Relative to the notebook's working directory (cell 6 chdirs there).
                 p = Path(head.split()[1])
                 p = p if p.is_absolute() else Path.cwd() / p

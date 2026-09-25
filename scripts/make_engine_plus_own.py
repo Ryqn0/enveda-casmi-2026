@@ -72,7 +72,9 @@ ours = [md(
     "subprocess.run([sys.executable, '-m', 'pip', 'install', '-q', '--no-index',\n"
     "                f'--find-links={deps[0]}', '--no-deps', 'ms_entropy'], check=True)\n"
     "os.makedirs('casmi', exist_ok=True)   # %%writefile does not create directories\n")]
-ours.append(code("%%writefile casmi/__init__.py\n"))
+# Jupyter rejects %%writefile with an EMPTY body ("the cell body is empty") --
+# v1 of this notebook died on exactly that. Give the package marker a line.
+ours.append(code('%%writefile casmi/__init__.py\n"""Our pipeline (github: Ryqn0/enveda-casmi-2026), src/casmi."""\n'))
 for m in MODULES:
     ours.append(code(f"%%writefile casmi/{m}.py\n" + (ROOT / "src/casmi" / f"{m}.py").read_text()))
 ours.append(code('''import gc, time
