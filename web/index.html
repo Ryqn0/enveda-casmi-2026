@@ -83,9 +83,22 @@
   <div class="table-wrap" id="table"></div>
 
   <footer>
-    The example is caffeine, [M+H]<sup>+</sup> at 195.0877. The model recognises
-    structures; it never invents one, so a molecule missing from COCONUT cannot be found.
-    Built for the Enveda CASMI 2026 Kaggle competition.
+    <p>
+      The example is caffeine, [M+H]<sup>+</sup> at 195.0877. The model recognises
+      structures; it never invents one, so a molecule missing from COCONUT cannot be found.
+      Built for the Enveda CASMI 2026 Kaggle competition.
+    </p>
+    <p>
+      <strong>This page runs one part of the system: the fingerprint model.</strong>
+      The pipeline submitted to the competition (public leaderboard 0.355) also searches
+      2.1 million reference spectra for the same molecule and its chemical relatives, and
+      combines all the evidence with learned rankers. It is built on the public W088 engine
+      by Jiachen Li, prvsiyan, haideptry and megayak, with our own pipeline blended in. That
+      part needs several gigabytes of data and a server, so it cannot run in a browser. On
+      its own, the fingerprint step shown here is one of the weaker signals: on natural
+      products it never saw in training, its mean reciprocal rank is 0.34&ndash;0.39
+      (1.0 would mean the correct structure always comes first).
+    </p>
   </footer>
 </main>
 
