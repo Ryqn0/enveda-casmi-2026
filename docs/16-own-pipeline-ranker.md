@@ -172,4 +172,25 @@ to apply the blend at w = 0.1. `scripts/dryrun_engine_notebook.py` executes
 engine-style notebooks locally (fake `/kaggle/input`, `%%writefile` honoured):
 20 molecules OK.
 
-Submission: **pending**.
+Submission 56550147 (kernel `ryqn00/casmi26-engine-plus-own` v2, 56 min):
+**LB 0.355**, from 0.349. Predicted +0.004 (≈ +0.005 on the LB scale), got
++0.006. It's the same pattern as the tie fix: right direction, right size, a
+single score within noise, but backed by the harness and a clear mechanism.
+
+v1 of the notebook failed on Kaggle: Jupyter rejects `%%writefile` with an
+empty body (the `casmi/__init__.py` cell), and the local dry run had allowed
+it. The dry run now rejects empty bodies as Jupyter does.
+
+## 9. Summary
+
+| | LB |
+|---|---:|
+| our pipeline, fixed blend (Phase 3b) | 0.244 |
+| our pipeline, learned ranker + honest fpnet v5 | 0.244 |
+| public engine (W088) | 0.341 |
+| + tie-averaged rank features (ours, docs/15) | 0.349 |
+| **+ 10% of our pipeline's ranking** | **0.355** |
+
+On its own, our pipeline stays at 0.244: the harness overrates it, for a reason
+not identified. As a **second opinion** for the engine, it adds measurably,
+because it is right on different molecules.

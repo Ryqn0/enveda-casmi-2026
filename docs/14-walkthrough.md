@@ -8,7 +8,8 @@ The other docs (00–13) are the detailed lab notebook, written as things
 happened. This one is the story told once, start to finish, with hindsight.
 
 **Final state:** best public leaderboard score **0.341** (rank ~390 of ~1,227);
-later **0.349** with one fix of ours (see the postscript to section 8 and docs/15);
+later **0.349** with one fix of ours and **0.355** with our own pipeline blended in
+(see the postscripts to section 8, docs/15 and docs/16);
 private GitHub repo, an in-browser demo on a free Hugging Face Space.
 
 ---
@@ -393,6 +394,14 @@ molecules. Reproducing the authors' published numbers exposed a bug: rank
 features broke ties by list position, and the true answer's position differed
 between training rows and serving. Averaging ties on both sides: harness
 +0.0044 ± 0.0045, leaderboard **0.341 → 0.349**.
+
+**Postscript (Phase 8, docs/16): 0.355.** Our own pipeline was rebuilt with
+the engine's lessons: a learned ranker over raw evidence, and a fingerprint
+model (v5) that never saw the evaluation molecules. Alone it still scores 0.244:
+the harness overrates it. But it is right on different molecules than the
+engine (42 of 492 molecule-simulations where the engine is wrong), so a 10%
+share of its ranking in the engine's final order took the leaderboard
+**0.349 → 0.355**.
 
 One more false alarm handled correctly: the run's feature diagnostics looked
 shifted — because a notebook run's `test.parquet` is the **placeholder** (every

@@ -10,9 +10,10 @@ phase, every file, every command, and the lessons.
 **Metric:** MRR@25 on tautomer-canonical InChIKey14 — 25 ranked SMILES per molecule,
 score `1/rank` of the first correct one.
 
-**Best public LB: 0.349** — the public "W088" engine (0.341, credited below) with one
-fix of ours: tie-averaged rank features (`kaggle/engine_ties/`, docs/15). Our own
-pipeline peaked at **0.244**.
+**Best public LB: 0.355** — the public "W088" engine (0.341, credited below) with two
+additions of ours: tie-averaged rank features (0.349, docs/15) and a 10% share of our
+own pipeline's ranking (`kaggle/engine_plus_own/`, docs/16). Our own pipeline alone
+scores **0.244**.
 
 ## Setup
 
@@ -52,7 +53,9 @@ uv run python scripts/dryrun_notebook.py     # runs the real Kaggle notebook cel
 | 5 | structure-capped data, contrastive fine-tune, fragmentation, learned ranker | 0.204 / 0.234 |
 | 6 | public W088 engine, reproduced | **0.341** |
 | 6 | + leak-free fingerprints for its second ranker | 0.332 / 0.330 |
-| 7 | + tie-averaged rank features (found with the offline engine harness) | **0.349** |
+| 7 | + tie-averaged rank features (found with the offline engine harness) | 0.349 |
+| 8 | our pipeline rebuilt: learned ranker, honest fpnet v5 | 0.244 |
+| 8 | engine (0.349) + 10% of our pipeline's ranking | **0.355** |
 
 ## What the docs teach
 
@@ -66,6 +69,10 @@ uv run python scripts/dryrun_notebook.py     # runs the real Kaggle notebook cel
 - **[15](docs/15-engine-harness.md)** — an offline harness for the whole engine; reproduce
   published numbers before experimenting; a rank feature whose ties were broken by list
   position, differently in training and serving.
+- **[16](docs/16-own-pipeline-ranker.md)** — hold structures out before training, so
+  features are honest; why a ranker learned to distrust library matches; similarity to
+  the test beats data quantity; a weaker pipeline that is right on *different* molecules
+  still improves a stronger one.
 
 ## Credits
 
