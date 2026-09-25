@@ -62,32 +62,33 @@ def build_dataset() -> None:
         raise SystemExit("data/pool.parquet missing — run scripts/build_pool.py")
     shutil.copy2(pool, STAGE / "pool.parquet")
 
-    # Trained fingerprint model and the learned ranker trained on ITS scores.
-    # torch is already in the Kaggle base image, so only weights ship. They are
-    # renamed to fixed names so the notebook never needs to know versions.
+    # Trained fingerprint model and the rows the learned ranker is trained from
+    # (in the notebook -- rows survive a scikit-learn version change, a pickled
+    # model may not). torch is already in the Kaggle base image, so only
+    # weights ship. Fixed file names, so the notebook never needs versions.
     import re
+    import numpy as np
     import torch
-    fp_ck_path = ROOT / "data/fpnet/fpnet_v4c.pt"
-    rk_ck_path = ROOT / "data/ranker_v4c.pt"
-    for f in (fp_ck_path, rk_ck_path):
+    fp_ck_path = ROOT / "data/fpnet/fpnet_v5.pt"
+    rows_path = ROOT / "data/own/ranker_rows.npz"
+    for f in (fp_ck_path, rows_path):
         if not f.exists():
             raise SystemExit(f"{f} missing")
     fp_tag = torch.load(fp_ck_path, map_location="cpu",
                         weights_only=False).get("model_tag")
-    rk_tag = torch.load(rk_ck_path, map_location="cpu",
-                        weights_only=False).get("fpnet_tag")
+    rows_tag = str(np.load(rows_path, allow_pickle=True)["fpnet_tag"])
     nb_tag = re.search(r'EXPECTED_FPNET_TAG = "([^"]+)"',
                        (ROOT / "kaggle" / "submit_notebook.py").read_text())
     # Three things must agree, and each disagreement is a different mistake:
-    # ranker vs fpnet -> ranker served another model's scores (skew);
+    # rows vs fpnet -> the ranker learned another model's scores (skew);
     # fpnet vs notebook -> the notebook would reject its own dataset.
     # Checked HERE, in seconds, instead of 25 minutes into a Kaggle run.
-    assert fp_tag and rk_tag == fp_tag, f"ranker built for {rk_tag}, fpnet is {fp_tag}"
+    assert fp_tag and rows_tag == fp_tag, f"ranker rows built with {rows_tag}, fpnet is {fp_tag}"
     assert nb_tag and nb_tag.group(1) == fp_tag, (
         f"notebook expects {nb_tag and nb_tag.group(1)}, shipping {fp_tag}")
     shutil.copy2(fp_ck_path, STAGE / "fpnet.pt")
-    shutil.copy2(rk_ck_path, STAGE / "ranker.pt")
-    print(f"shipping fpnet {fp_tag} + ranker built for it")
+    shutil.copy2(rows_path, STAGE / "ranker_rows.npz")
+    print(f"shipping fpnet {fp_tag} + ranker rows built with it")
 
     (STAGE / "dataset-metadata.json").write_text(
         json.dumps(

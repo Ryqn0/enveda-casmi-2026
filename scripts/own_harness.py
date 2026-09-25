@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "scripts"))
 from casmi.features import (FEATURE_NAMES, _row_of_key, _z, candidate_features,  # noqa: E402
-                            fp_evidence, molecule_evidence)
+                            fit_ranker, fp_evidence, molecule_evidence, ranker_scores)
 from casmi.library import Library  # noqa: E402
 from casmi.pool import CandidatePool  # noqa: E402
 from casmi.ranker import expected_rr  # noqa: E402
@@ -43,9 +43,6 @@ OWN = ROOT / "data" / "own"
 C1_W, C2_W, K = 0.162, 0.220, 25
 EVAL_LIB = "enveda-np-examples"
 MAX_QUERY = 4
-GBM = dict(max_depth=6, max_iter=500, learning_rate=0.03, min_samples_leaf=80,
-           l2_regularization=1.0)       # the public engine's settings
-W_A, SEEDS = (0.35, 0.55), (0, 1)       # class-1 row weight priors x seeds, averaged
 
 LIB = POOL = RAW = QUERIES = None        # set before forking, shared by workers
 
@@ -160,7 +157,6 @@ def rows(d, fps, pool, split):
 
 
 def score(args) -> None:
-    from sklearn.ensemble import HistGradientBoostingClassifier
     pool = CandidatePool(ROOT / "data" / "pool.parquet")
     d = pickle.load(open(OWN / "evidence.pkl", "rb"))
     fps = pickle.load(open(OWN / f"fp_{args.model}.pkl", "rb")) if args.model else None
@@ -181,13 +177,7 @@ def score(args) -> None:
     mono = [1 if n in up else -1 if n in down else 0 for n in names] if args.monotonic else None
 
     def fit_predict(Xa, ya, c1a, Xb):
-        out = np.zeros(len(Xb))
-        for wA in W_A:
-            for sd in SEEDS:
-                m = HistGradientBoostingClassifier(random_state=sd, monotonic_cst=mono, **GBM)
-                m.fit(Xa[:, keep], ya, sample_weight=np.where(c1a, wA, 1 - wA))
-                out += m.predict_proba(Xb[:, keep])[:, 1]
-        return out
+        return ranker_scores(fit_ranker(Xa[:, keep], ya, c1a, mono), Xb[:, keep])
 
     if args.cv_eval:
         # Also train on the eval molecules' rows -- the only timsTOF ones --
@@ -237,9 +227,28 @@ def score(args) -> None:
               f"| {dl.mean():+.4f} +/- {2 * se:.4f} |")
 
 
+def export(args) -> None:
+    """All simulation rows -> data/own/ranker_rows.npz, which the notebook ships
+    and trains the ranker from. Train AND eval molecules: the eval ones are the
+    only timsTOF rows, worth +0.07 on class 1 (--cv-eval)."""
+    import torch
+    pool = CandidatePool(ROOT / "data" / "pool.parquet")
+    d = pickle.load(open(OWN / "evidence.pkl", "rb"))
+    fps = pickle.load(open(OWN / f"fp_{args.model}.pkl", "rb"))
+    parts = [rows(d, fps, pool, s) for s in ("train", "eval")]
+    X, y, c1 = (np.concatenate([p[i] for p in parts]) for i in range(3))
+    tag = torch.load(ROOT / "data" / "fpnet" / f"{args.model}.pt", map_location="cpu",
+                     weights_only=False).get("model_tag")
+    assert tag, "the fpnet checkpoint has no model_tag; the notebook checks it"
+    out = OWN / "ranker_rows.npz"
+    np.savez_compressed(out, X=X, y=y, c1=c1, feature_names=np.array(FEATURE_NAMES),
+                        fpnet_tag=np.array(tag))
+    print(f"wrote {out}: {len(X):,} rows x {X.shape[1]} features, {int(y.sum())} true, fpnet {tag}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("stage", choices=["evidence", "fp", "score"])
+    ap.add_argument("stage", choices=["evidence", "fp", "score", "export"])
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--only", default=None, help="evidence: e.g. train-c1, merged into the existing file")
     ap.add_argument("--model", default=None,
@@ -254,6 +263,8 @@ def main() -> None:
         evidence(args.workers, args.only)
     elif args.stage == "fp":
         fp(Path(args.model))
+    elif args.stage == "export":
+        export(args)
     else:
         score(args)
 

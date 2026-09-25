@@ -173,6 +173,31 @@ def candidate_features(ev: dict) -> np.ndarray:
     return np.column_stack(cols + ctx).astype(np.float32)
 
 
+# --- the ranker ---------------------------------------------------------------
+# Gradient-boosted trees, the public engine's settings. One classifier per
+# (class-1 weight, seed), averaged: class-1 and class-2 simulation rows pull in
+# opposite directions on "has library spectra" (docs/16), and the weight sets
+# the balance. Trained in the notebook from shipped rows, so no pickled model
+# has to survive a scikit-learn version change.
+GBM = dict(max_depth=6, max_iter=500, learning_rate=0.03, min_samples_leaf=80,
+           l2_regularization=1.0)
+W_A = (0.35, 0.55)
+SEEDS = (0, 1)
+
+
+def fit_ranker(X: np.ndarray, y: np.ndarray, is_c1: np.ndarray, monotonic_cst=None) -> list:
+    """Train the ranker on simulation rows (y: is the true candidate)."""
+    from sklearn.ensemble import HistGradientBoostingClassifier
+    return [HistGradientBoostingClassifier(random_state=sd, monotonic_cst=monotonic_cst, **GBM)
+            .fit(X, y, sample_weight=np.where(is_c1, wA, 1.0 - wA))
+            for wA in W_A for sd in SEEDS]
+
+
+def ranker_scores(models: list, X: np.ndarray) -> np.ndarray:
+    """Mean probability of being the true candidate; higher ranks first."""
+    return np.mean([m.predict_proba(X)[:, 1] for m in models], axis=0)
+
+
 def _self_check() -> None:
     # Ties share their rank: two zeros among three values both get 0.75.
     r = rank01(np.array([1.0, 0.0, 0.0]))

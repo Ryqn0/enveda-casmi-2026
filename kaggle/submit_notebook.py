@@ -51,7 +51,8 @@ library code rather than a copy that could drift.
 # | 3b | fixed inputs, weight 0.5 | 0.244 |
 # | 4 | engineered features, weight 0.25 | 0.228 |
 # | 5 | v4c model + fragmentation + learned ranker | 0.204 |
-# | 6 | **this notebook** -- v4c model, same blend as version 3b | ? |
+# | 6 | v4c model, same blend as version 3b | 0.234 |
+# | 7 | **this notebook** -- learned ranker over raw features, fpnet v5 (Step 7b) | ? |
 #
 # Versions 3, 4 and 5 each looked better offline and scored worse. Two causes,
 # both in the VALIDATION, not the model: the holdout overlapped the model's
@@ -227,6 +228,23 @@ subprocess.run(
 # %%EMBED src/casmi/rank.py
 
 # %% [markdown]
+# ## Step 7b — features and the learned ranker (Phase 8)
+#
+# The fixed blend above threw away how STRONG each piece of evidence is. The
+# public notebooks beat it with channels no better than ours by feeding raw
+# evidence to gradient-boosted trees (docs/13). This is that recipe with our own
+# components: identity, an adduct-shifted self match, library coverage, analog,
+# fingerprint (v5, trained WITHOUT the molecules the ranker learns from), fragments
+# and mass error -- raw, plus rank / gap / z-score within the molecule, with tied
+# ranks averaged (docs/15).
+#
+# Measured on the 250 enveda-np-examples molecules, class 1 / class 2 simulated
+# one at a time (docs/16): predicted LB 0.283, vs 0.276 analog only and 0.255
+# for the fixed blend with the same model.
+
+# %%EMBED src/casmi/features.py
+
+# %% [markdown]
 # ## Step 8 — build the index
 #
 # ~7 minutes and ~10 GB on Kaggle's 4 vCPUs, against a 9-hour cap. Written to
@@ -266,9 +284,11 @@ TRAIN = find_one("train.parquet")
 COMP = TRAIN.parent
 POOL = find_one("pool.parquet")
 FPNET = find_one("fpnet.pt")
+RANKER_ROWS = find_one("ranker_rows.npz")
 print("competition data: ", COMP)
 print("candidate pool:   ", POOL)
 print("fingerprint model:", FPNET)
+print("ranker rows:      ", RANKER_ROWS)
 
 INDEX = Path("/tmp/index")
 OUT = Path("/kaggle/working/submission.csv")
@@ -279,11 +299,13 @@ build(TRAIN, INDEX, TEST_MZ_RANGE, set(TEST_ADDUCTS))
 print(f"index built in {time.time() - t0:.0f}s")
 
 # %% [markdown]
-# ## Step 9 — rank every test molecule
+# ## Step 9 — train the ranker, then rank every test molecule
 #
-# A molecule may have been measured several times at different collision
-# energies. Scoring is per molecule, so `rank` fuses them, keeping each
-# structure's best analog score across the measurements.
+# The ranker is trained HERE, from shipped simulation rows (~1 minute), rather
+# than shipped pickled: a pickled scikit-learn model can break on a version
+# change, rows cannot. A molecule may have been measured several times, at
+# different collision energies and even as different adducts; its evidence
+# fuses all of them.
 
 # %%
 import torch
@@ -310,21 +332,24 @@ assert fpnet_ck.get("max_peaks") == 256, (
 # max_peaks alone cannot tell one 256-peak model from another, and neither
 # can val_loss thresholds -- those broke the moment the validation set changed.
 # Every shipped checkpoint now carries a model_tag; check it exactly.
-EXPECTED_FPNET_TAG = "v4c"
+EXPECTED_FPNET_TAG = "v5"
 assert fpnet_ck.get("model_tag") == EXPECTED_FPNET_TAG, (
     f"mounted fpnet is {fpnet_ck.get('model_tag')!r}, expected "
     f"{EXPECTED_FPNET_TAG!r}. Kaggle mounted a stale casmi26-deps; re-push."
 )
 
-# Platt calibration is deliberately NOT used: it improves the probabilities
-# (log-loss 0.2187 -> 0.0732) and makes the RANKING worse (0.8509 -> 0.8461
-# A-only, 0.64 full). CombinedRanker defaults use_platt=False; assert it,
-# because the checkpoint does carry the coefficients.
-# No learned ranker: on natural products it did not beat the fixed blend, and
-# the one trained on enveda-180 collapsed class 1 (docs/12).
-ranker = CombinedRanker(lib, pool, fpnet=fpnet, fpnet_ck=fpnet_ck, device=DEV)
-assert ranker.ranker is None, "learned ranker should be OFF"
-assert getattr(ranker, "platt", None) is None, "Platt calibration is ON — it measured worse"
+# The ranker's rows hold fpnet features computed by ONE model; serving them
+# another model's scores is the train/serve skew this project kept paying for.
+R = np.load(RANKER_ROWS, allow_pickle=True)
+assert str(R["fpnet_tag"]) == EXPECTED_FPNET_TAG, f"ranker rows built with fpnet {R['fpnet_tag']}"
+assert list(R["feature_names"]) == FEATURE_NAMES, "ranker rows use a different feature list"
+t0 = time.time()
+ranker_models = fit_ranker(R["X"], R["y"], R["c1"])
+print(f"ranker: {len(ranker_models)} models on {len(R['X']):,} rows in {time.time() - t0:.0f}s")
+
+# CombinedRanker is kept only for its padding rule (_pad): fewer than 25
+# candidates in the window -> fill from a 20x wider window, after the ranked ones.
+padder = CombinedRanker(lib, pool)
 
 test = pd.read_parquet(COMP / "test.parquet")
 print(f"test:    {len(test):,} spectra / {test.molecule_id.nunique():,} molecules")
@@ -350,7 +375,7 @@ rows, no_cand, short = [], 0, 0
 # sort=True keeps the output order deterministic between runs.
 for mid, grp in test.groupby("molecule_id", sort=True):
     spectra = [(float(r.precursor_mz), peaks_of(r)) for r in grp.itertuples()]
-    adduct = grp.adduct.iloc[0]
+    adducts = list(grp.adduct)
 
     # Real collision energies, averaged over a stepped acquisition exactly as
     # training did. Passing 0 instead cost the previous submission: the model
@@ -362,7 +387,20 @@ for mid, grp in test.groupby("molecule_id", sort=True):
         for r in grp.itertuples()
     ]
 
-    cand, scores = ranker.rank(spectra, adduct, k=K, collision_energies=ces)
+    # instrument 0 = timsTOF: the whole test set is timsTOF.
+    ev = molecule_evidence(lib, pool, spectra, adducts, instrument_id=0,
+                           collision_energies=ces)
+    cand = ev["cand"]
+    if len(cand):
+        ev["fp"] = fp_evidence(fpnet, fpnet_ck, ev, pool, device=DEV)
+        s = ranker_scores(ranker_models, candidate_features(ev))
+        top = np.argsort(-s, kind="stable")[:K]
+        cand = cand[top]
+    if len(cand) < K:
+        # Also when the window is EMPTY: nearest masses from a 20x wider
+        # window beat 25 arbitrary structures.
+        cand, _ = padder._pad(cand, np.zeros(len(cand), np.float32), spectra[0][0],
+                              adducts[0], PPM, K)
 
     if len(cand) == 0:
         # No candidate of the right mass — an unrecognised adduct, or a mass
