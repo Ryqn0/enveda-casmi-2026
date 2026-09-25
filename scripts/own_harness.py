@@ -160,7 +160,13 @@ def score(args) -> None:
     pool = CandidatePool(ROOT / "data" / "pool.parquet")
     d = pickle.load(open(OWN / "evidence.pkl", "rb"))
     fps = pickle.load(open(OWN / f"fp_{args.model}.pkl", "rb")) if args.model else None
-    Xtr, ytr, c1tr, _ = rows(d, fps, pool, "train")
+    Xtr, ytr, c1tr, gtr = rows(d, fps, pool, "train")
+    if args.train_frac < 1.0:
+        # Learning curve: keep a random fraction of the training MOLECULES.
+        mols = np.unique(gtr // 2)
+        kept = np.random.default_rng(1).choice(mols, int(len(mols) * args.train_frac), replace=False)
+        m = np.isin(gtr // 2, kept)
+        Xtr, ytr, c1tr = Xtr[m], ytr[m], c1tr[m]
     Xev, yev, c1ev, gev = rows(d, fps, pool, "eval")
     keep = [i for i, n in enumerate(FEATURE_NAMES) if not any(n.startswith(p) for p in args.drop)]
     print(f"train {len(Xtr):,} rows ({int(ytr.sum())} true), eval {len(Xev):,} rows; "
@@ -177,7 +183,7 @@ def score(args) -> None:
     mono = [1 if n in up else -1 if n in down else 0 for n in names] if args.monotonic else None
 
     def fit_predict(Xa, ya, c1a, Xb):
-        return ranker_scores(fit_ranker(Xa[:, keep], ya, c1a, mono), Xb[:, keep])
+        return ranker_scores(fit_ranker(Xa[:, keep], ya, c1a, mono, tuple(args.w_a)), Xb[:, keep])
 
     if args.cv_eval:
         # Also train on the eval molecules' rows -- the only timsTOF ones --
@@ -219,6 +225,10 @@ def score(args) -> None:
     print("| config | class 1 | class 2 | predicted LB | vs gbm (+/- 2 SE) |")
     print("|---|---:|---:|---:|---:|")
     base = C1_W * np.array(per["gbm ranker"]["c1"]) + C2_W * np.array(per["gbm ranker"]["c2"])
+    # Per-molecule predicted-LB contributions, for paired comparisons across runs
+    # (molecules are in the same order in every run: sorted group ids).
+    if args.save:
+        np.save(OWN / f"per_mol_{args.save}.npy", base)
     for name, rr in per.items():
         c1, c2 = np.array(rr["c1"]), np.array(rr["c2"])
         dl = C1_W * c1 + C2_W * c2 - base
@@ -256,6 +266,12 @@ def main() -> None:
     ap.add_argument("--drop", nargs="*", default=[], help="score: drop features by name prefix")
     ap.add_argument("--monotonic", action="store_true",
                     help="score: evidence features may only raise a candidate's score")
+    ap.add_argument("--train-frac", type=float, default=1.0,
+                    help="score: train on this fraction of the training molecules")
+    ap.add_argument("--save", default=None,
+                    help="score: save per-molecule results as per_mol_<name>.npy")
+    ap.add_argument("--w-a", type=float, nargs="+", default=[0.35, 0.55],
+                    help="score: class-1 row weights, one model per value")
     ap.add_argument("--cv-eval", action="store_true",
                     help="score: also train on the eval molecules, 5-fold by molecule")
     args = ap.parse_args()

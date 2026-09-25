@@ -185,12 +185,16 @@ W_A = (0.35, 0.55)
 SEEDS = (0, 1)
 
 
-def fit_ranker(X: np.ndarray, y: np.ndarray, is_c1: np.ndarray, monotonic_cst=None) -> list:
-    """Train the ranker on simulation rows (y: is the true candidate)."""
+def fit_ranker(X: np.ndarray, y: np.ndarray, is_c1: np.ndarray, monotonic_cst=None,
+               w_a=W_A) -> list:
+    """Train the ranker on simulation rows (y: is the true candidate).
+
+    w_a: weights of the class-1 rows (class-2 rows get 1 - w), one model each.
+    """
     from sklearn.ensemble import HistGradientBoostingClassifier
     return [HistGradientBoostingClassifier(random_state=sd, monotonic_cst=monotonic_cst, **GBM)
             .fit(X, y, sample_weight=np.where(is_c1, wA, 1.0 - wA))
-            for wA in W_A for sd in SEEDS]
+            for wA in w_a for sd in SEEDS]
 
 
 def ranker_scores(models: list, X: np.ndarray) -> np.ndarray:
