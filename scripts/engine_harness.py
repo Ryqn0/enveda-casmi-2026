@@ -367,7 +367,7 @@ def score(E, args) -> None:
                         lambda: E.fit_pv_rankers(str(PUB / "engine" / "rank_train.npz")))
     s_ours_all = ours_scores(E, recs, args)
 
-    ckey, per = {}, {}
+    ckey, per, dumps = {}, {}, {}
     for sim in ("c1", "c2"):
         s_ours = s_ours_all[sim]
         s_pv = E.score_molecules(recs[sim], pvr, ["base"], use_fp=True)
@@ -380,6 +380,15 @@ def score(E, args) -> None:
             sets[f"prob {w:g}"] = {m: w * s_pv[m] + (1 - w) * s_ours[m] for m in s_pv}
         for name, sc in sets.items():
             per[(name, sim)] = reciprocal_ranks(E, recs[sim], sc, truth, ckey)
+        if args.dump:
+            # Per-candidate scores of the first blend, by structure key, for
+            # combining with another pipeline (scripts/blend_harness.py).
+            dumps[sim] = {r["mid"]: (E.POOL["keys"][r["cand"]].astype(str),
+                                     sets[f"blend {args.w_pv[0]:g}"][r["mid"]])
+                          for r in recs[sim] if r["mid"] in s_pv}
+    if args.dump:
+        pickle.dump(dumps, open(args.dump, "wb"))
+        print(f"dumped per-candidate scores to {args.dump}")
 
     names = list(dict.fromkeys(n for n, _ in per))
     lb = {n: C1_W * per[(n, "c1")] + C2_W * per[(n, "c2")] for n in names}
@@ -409,6 +418,8 @@ def main() -> None:
                     help="also score probability blends w*A + (1-w)*B")
     ap.add_argument("--np-weight", type=float, default=1.0,
                     help="multiply the sample weight of ranker B's timsTOF (np) rows")
+    ap.add_argument("--dump", type=Path, default=None,
+                    help="score: save the first blend's per-candidate scores (pickle)")
     ap.add_argument("--nb", type=Path, default=NB,
                     help="engine notebook to test (default: the unmodified public engine)")
     args = ap.parse_args()

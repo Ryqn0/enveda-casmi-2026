@@ -200,6 +200,22 @@ def score(args) -> None:
     else:
         p = fit_predict(Xtr, ytr, c1tr, Xev)
 
+    if args.dump:
+        # Per-candidate ranker scores by structure key, for blending with the
+        # public engine (scripts/blend_harness.py). Same iteration order as
+        # rows(), so the slices of p line up with each molecule-simulation.
+        dumps, at = {"c1": {}, "c2": {}}, 0
+        for (i, sim), ev in d["ev"].items():
+            q = d["queries"][i]
+            if q["split"] != "eval" or not len(ev["cand"]):
+                continue
+            n = len(ev["cand"])
+            dumps[sim][q["key"]] = (pool.key[ev["cand"]].astype(str), p[at:at + n])
+            at += n
+        assert at == len(p)
+        pickle.dump(dumps, open(args.dump, "wb"))
+        print(f"dumped per-candidate scores to {args.dump}")
+
     # Fixed-blend baselines on the SAME candidates: the 0.244-style pipeline.
     col = {n: i for i, n in enumerate(FEATURE_NAMES)}
     configs = {"gbm ranker": p,
@@ -268,6 +284,8 @@ def main() -> None:
                     help="score: evidence features may only raise a candidate's score")
     ap.add_argument("--train-frac", type=float, default=1.0,
                     help="score: train on this fraction of the training molecules")
+    ap.add_argument("--dump", type=Path, default=None,
+                    help="score: save the ranker's per-candidate eval scores (pickle)")
     ap.add_argument("--save", default=None,
                     help="score: save per-molecule results as per_mol_<name>.npy")
     ap.add_argument("--w-a", type=float, nargs="+", default=[0.35, 0.55],
